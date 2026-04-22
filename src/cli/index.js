@@ -26,6 +26,7 @@ import "./commands/pane.js";
 import "./commands/tab.js";
 import "./commands/stream.js";
 import "./commands/morning.js";
+import "./commands/reports.js";
 
 // Run
 import { run } from "./router.js";
