@@ -14,6 +14,7 @@
 import { todayET, isTradingDay } from './calendar.js';
 import { ensureTVLive, log } from './runner.js';
 import { generatePostCloseReport } from '../core/reports.js';
+import { gradeTradingDate } from '../core/grading.js';
 
 const date = todayET();
 
@@ -38,6 +39,21 @@ try {
   const range   = r.actual_session?.range_points ?? 'n/a';
   const path    = result?.path ?? '(not saved)';
   log(`[postclose] ✓ Complete — status: ${status}, day_type: ${dayType}, range: ${range}pts, saved: ${path}`);
+
+  // Stage 2: auto-grade the day once the postclose is saved.
+  if (result?.success) {
+    try {
+      const g = await gradeTradingDate({ date, overwrite: true });
+      if (g.success) {
+        log(`[postclose] Graded — ${g.grading.overall_grade} (${g.grading.score_0_to_100}/100), bias=${g.grading.bias_correct === true ? 'HIT' : g.grading.bias_correct === false ? 'MISS' : 'N/A'}, tags=[${g.grading.failure_tags.join(', ') || 'none'}]`);
+      } else {
+        log(`[postclose] Grading skipped: ${g.reason ?? g.error ?? 'unknown'}`);
+      }
+    } catch (gradeErr) {
+      log(`[postclose] Grading error (non-fatal): ${gradeErr.message}`);
+    }
+  }
+
   process.exit(result?.success ? 0 : 1);
 
 } catch (err) {
