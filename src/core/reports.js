@@ -26,6 +26,7 @@ import * as health from './health.js';
 import * as chart from './chart.js';
 import * as data from './data.js';
 import { isEarlyCloseDay } from '../scheduler/calendar.js';
+import { generatePremarketNarrative, buildCallerSuppliedMetadata } from './narrative.js';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -570,8 +571,14 @@ export async function generatePremarketReport({ date, narrative } = {}) {
     const existingPath = join(reportDir(dateStr), 'premarket_nq.json');
     if (existsSync(existingPath)) {
       const existing = JSON.parse(readFileSync(existingPath, 'utf8'));
-      const updated  = { ...existing, narrative_report: narrative, run_time_et: runTimeET, run_time_utc: runTimeUtc };
-      const result   = saveReport({ report_type: 'premarket_report', date: dateStr, data: updated });
+      const updated  = {
+        ...existing,
+        narrative_report:   narrative,
+        narrative_metadata: buildCallerSuppliedMetadata(),
+        run_time_et:        runTimeET,
+        run_time_utc:       runTimeUtc,
+      };
+      const result = saveReport({ report_type: 'premarket_report', date: dateStr, data: updated });
       return { success: true, path: result.path, report: updated };
     }
   }
@@ -676,7 +683,8 @@ export async function generatePremarketReport({ date, narrative } = {}) {
       key_levels:         keyLevels,
       indicator_snapshot: snapshot,
       data_quality:       dataQuality,
-      narrative_report:   narrative || '',
+      narrative_report:   narrative || '',   // replaced below when auto-generating
+      narrative_metadata: null,                // filled in immediately below
       raw_inputs: {
         quote:       quoteRes,
         table_rows:  tableRows,
@@ -687,6 +695,17 @@ export async function generatePremarketReport({ date, narrative } = {}) {
         chart_state: { symbol: chartState.symbol, resolution: chartState.resolution },
       },
     };
+
+    // Narrative: caller-supplied takes precedence; otherwise auto-generate
+    // deterministically from the structured fields we just built.
+    if (narrative) {
+      report.narrative_report   = narrative;
+      report.narrative_metadata = buildCallerSuppliedMetadata();
+    } else {
+      const gen = generatePremarketNarrative(report);
+      report.narrative_report   = gen.text;
+      report.narrative_metadata = gen.metadata;
+    }
 
     const saved = saveReport({ report_type: 'premarket_report', date: dateStr, data: report });
     return { success: true, path: saved.path, report };

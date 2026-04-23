@@ -101,7 +101,14 @@ export default function TodayPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card
           title="Premarket narrative"
-          subtitle="Rules-engine output"
+          subtitle={(() => {
+            const meta = raw?.narrative_metadata;
+            if (!meta?.provider) return 'Rules-engine output';
+            const provLabel = meta.provider === 'deterministic' ? 'deterministic template'
+                            : meta.provider === 'caller_supplied' ? 'caller-supplied'
+                            : meta.provider;
+            return `Rules-engine output · ${provLabel} v${meta.version ?? '?'}`;
+          })()}
           actions={<Link href="/premarket" className="text-xs text-accent hover:underline">Open full report →</Link>}
         >
           {pm.narrative_report && pm.narrative_report.trim().length > 0 ? (
@@ -109,10 +116,9 @@ export default function TodayPage() {
           ) : (
             <div className="space-y-2 text-sm">
               <div className="text-muted">
-                No prose narrative attached to this run. Narratives are written when Claude calls
-                {' '}<code className="font-mono text-xs">run_premarket_report</code>{' '}
-                with a <code className="font-mono text-xs">narrative</code> argument. Scheduler-only runs
-                leave this field empty by design.
+                No narrative text attached to this run. Scheduled runs auto-generate a deterministic
+                narrative from the structured fields; if this card is empty, the report itself has
+                no usable structured fields yet.
               </div>
               <div className="text-xs text-muted">
                 The structured-data cards below (Why This Bias · Invalidation · Intermarket · Indicator Summary ·

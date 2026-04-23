@@ -18,6 +18,7 @@ import { gradeTradingDate } from '../core/grading.js';
 import { rebuildAnalytics } from '../core/analytics.js';
 import { rebuildDataset } from '../core/dataset.js';
 import { trainAllModels, predictLatestShadow } from '../core/modeling.js';
+import { syncAppDatabase } from './app-sync.js';
 
 const date = todayET();
 
@@ -86,6 +87,19 @@ try {
       log(`[postclose] Shadow predictions written for ${shadowTasks} tasks (shadow mode only)`);
     } catch (spErr) {
       log(`[postclose] Shadow predict error (non-fatal): ${spErr.message}`);
+    }
+
+    // Stage 6A enhancement: auto-sync the web app DB after the full pipeline
+    // so the dashboard reflects today's post-close + grading without manual
+    // `npm run db:sync`.
+    const sync = syncAppDatabase();
+    if (sync.success) {
+      const c = sync.counts ?? {};
+      log(`[postclose] App sync ✓ — premarket=${c.premarket ?? '?'} postclose=${c.postclose ?? '?'} snapshots=${c.snapshots ?? '?'} models=${c.models ?? '?'} shadow=${c.shadow ?? '?'}`);
+    } else if (sync.skipped) {
+      log(`[postclose] App sync skipped — ${sync.reason}`);
+    } else {
+      log(`[postclose] App sync ✗ FAILED (non-fatal) — ${sync.error}`);
     }
   }
 

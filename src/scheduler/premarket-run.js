@@ -14,6 +14,7 @@
 import { todayET, isTradingDay } from './calendar.js';
 import { ensureTVLive, log } from './runner.js';
 import { generatePremarketReport } from '../core/reports.js';
+import { syncAppDatabase } from './app-sync.js';
 
 const date = todayET();
 
@@ -37,6 +38,27 @@ try {
   const bias   = r.bias ?? r.indicator_snapshot?.bias_label ?? 'unknown';
   const path   = result?.path ?? '(not saved)';
   log(`[premarket] ✓ Complete — status: ${status}, bias: ${bias}, saved: ${path}`);
+
+  // Narrative diagnostic
+  const narrLen     = (r.narrative_report || '').length;
+  const narrProv    = r.narrative_metadata?.provider ?? 'none';
+  const narrSects   = r.narrative_metadata?.sections?.length ?? 0;
+  log(`[premarket] Narrative — provider: ${narrProv}, chars: ${narrLen}, sections: ${narrSects}`);
+
+  // Stage 6A enhancement: auto-sync the web app DB so the dashboard updates
+  // without requiring `npm run db:sync` or a running app server.
+  if (result?.success) {
+    const sync = syncAppDatabase();
+    if (sync.success) {
+      const c = sync.counts ?? {};
+      log(`[premarket] App sync ✓ — premarket=${c.premarket ?? '?'} postclose=${c.postclose ?? '?'} snapshots=${c.snapshots ?? '?'} models=${c.models ?? '?'} shadow=${c.shadow ?? '?'}`);
+    } else if (sync.skipped) {
+      log(`[premarket] App sync skipped — ${sync.reason}`);
+    } else {
+      log(`[premarket] App sync ✗ FAILED (non-fatal) — ${sync.error}`);
+    }
+  }
+
   process.exit(result?.success ? 0 : 1);
 
 } catch (err) {
