@@ -15,6 +15,7 @@ import { todayET, isTradingDay } from './calendar.js';
 import { ensureTVLive, log } from './runner.js';
 import { generatePostCloseReport } from '../core/reports.js';
 import { gradeTradingDate } from '../core/grading.js';
+import { rebuildAnalytics } from '../core/analytics.js';
 
 const date = todayET();
 
@@ -51,6 +52,14 @@ try {
       }
     } catch (gradeErr) {
       log(`[postclose] Grading error (non-fatal): ${gradeErr.message}`);
+    }
+
+    // Stage 3: rebuild analytics snapshot (cheap, fully regenerable)
+    try {
+      const a = rebuildAnalytics();
+      log(`[postclose] Analytics rebuilt — ${a.total_records} records, written to ${a.analytics_dir}`);
+    } catch (anErr) {
+      log(`[postclose] Analytics rebuild error (non-fatal): ${anErr.message}`);
     }
   }
 

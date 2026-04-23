@@ -29,6 +29,7 @@ import "./commands/morning.js";
 import "./commands/reports.js";
 import "./commands/scheduler.js";
 import "./commands/grading.js";
+import "./commands/analytics.js";
 
 // Run
 import { run } from "./router.js";
