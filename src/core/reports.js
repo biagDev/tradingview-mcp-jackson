@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import * as health from './health.js';
 import * as chart from './chart.js';
 import * as data from './data.js';
+import { isEarlyCloseDay } from '../scheduler/calendar.js';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -56,6 +57,27 @@ function nowET() {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
+}
+
+/**
+ * DST-aware decomposition of a Unix-seconds epoch into ET components.
+ * Returns { date: 'YYYY-MM-DD', minuteOfDay: H*60+M } in America/New_York.
+ * Uses Intl so DST transitions are handled automatically.
+ */
+function etParts(epochSec) {
+  const d = new Date(epochSec * 1000);
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(d);
+  const get = type => fmt.find(p => p.type === type).value;
+  // "hour" may come back as "24" at midnight — normalize to "00"
+  const hh = get('hour') === '24' ? '00' : get('hour');
+  return {
+    date: `${get('year')}-${get('month')}-${get('day')}`,
+    minuteOfDay: parseInt(hh, 10) * 60 + parseInt(get('minute'), 10),
+  };
 }
 
 function reportDir(date) {
@@ -364,6 +386,7 @@ function basePremarket(dateStr, runTimeET, runTimeUtc) {
     report_type:       'premarket_report',
     symbol:            'NQ1!',
     trading_date:      dateStr,
+    calendar:          { source: 'nyse_rth_proxy', early_close: isEarlyCloseDay(dateStr) },
     run_time_et:       runTimeET,
     run_time_utc:      runTimeUtc,
     model_version:     MODEL_VERSION,
@@ -391,6 +414,7 @@ function basePostclose(dateStr, runTimeET, runTimeUtc) {
     report_type:      'postclose_report',
     symbol:           'NQ1!',
     trading_date:     dateStr,
+    calendar:         { source: 'nyse_rth_proxy', early_close: isEarlyCloseDay(dateStr) },
     run_time_et:      runTimeET,
     run_time_utc:     runTimeUtc,
     status:           'failed',
@@ -598,15 +622,21 @@ export async function generatePostCloseReport({ date, narrative } = {}) {
 
     const bars = ohlcvRes.bars || [];
 
-    // Extract RTH session bars: 09:30–16:00 ET = 13:30–20:00 UTC (seconds)
-    const RTH_START_SEC = 13 * 3600 + 30 * 60; // 13:30 UTC
-    const RTH_END_SEC   = 20 * 3600;            // 20:00 UTC
+    // Extract RTH session bars for the target trading date.
+    // RTH = 09:30–16:00 ET. We decompose each bar's epoch to ET components,
+    // so DST transitions (EDT↔EST) are handled correctly in both seasons.
+    const RTH_OPEN_MIN  = 9 * 60 + 30;   // 09:30 ET
+    const RTH_CLOSE_MIN = 16 * 60;       // 16:00 ET
     const rthBars = bars.filter(b => {
-      const secInDay = b.time % 86400;
-      return secInDay >= RTH_START_SEC && secInDay <= RTH_END_SEC;
+      if (!b?.time) return false;
+      const { date, minuteOfDay } = etParts(b.time);
+      return date === dateStr &&
+             minuteOfDay >= RTH_OPEN_MIN &&
+             minuteOfDay <  RTH_CLOSE_MIN;
     });
-    // Fall back to all bars if RTH filter returns nothing
-    const sessionBars = rthBars.length > 0 ? rthBars : bars;
+    // Fall back only to bars on the same trading date (not entire 200-bar buffer)
+    const sameDayBars = bars.filter(b => b?.time && etParts(b.time).date === dateStr);
+    const sessionBars = rthBars.length > 0 ? rthBars : sameDayBars;
 
     let sessionOpen = null, sessionHigh = null, sessionLow = null, sessionClose = null;
     if (sessionBars.length > 0) {
@@ -695,10 +725,12 @@ export async function generatePostCloseReport({ date, narrative } = {}) {
       },
       narrative_report: narrative || '',
       raw_inputs: {
-        quote:           quoteRes,
-        bar_count:       bars.length,
-        rth_bar_count:   rthBars.length,
-        table_rows:      tableRows,
+        quote:             quoteRes,
+        bar_count:         bars.length,
+        same_day_bar_count: sameDayBars.length,
+        rth_bar_count:     rthBars.length,
+        session_source:    rthBars.length > 0 ? 'rth' : (sameDayBars.length > 0 ? 'same_day_fallback' : 'none'),
+        table_rows:        tableRows,
         labels,
       },
     };

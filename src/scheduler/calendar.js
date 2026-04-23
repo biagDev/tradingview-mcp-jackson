@@ -1,12 +1,39 @@
 /**
- * US NYSE trading calendar.
+ * NYSE RTH trading calendar — used as a proxy for NQ1! scheduling.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * CALENDAR POLICY (explicit):
+ *
+ * NQ1! trades on CME Globex nearly 24 hours a day, Sunday evening through
+ * Friday afternoon. Our scheduler is anchored to the NYSE Regular Trading
+ * Hours session (09:30–16:00 ET), because:
+ *
+ *   1. The premarket report triggers at 09:00 ET (30 min before RTH open).
+ *   2. The post-close report triggers at 16:05 ET (5 min after RTH close).
+ *   3. The NQ Daily Bias Engine is calibrated around RTH dynamics (IB,
+ *      VWAP, gap statistics, PDH/PDC/PDL, session patterns).
+ *
+ * Therefore this calendar follows the NYSE holiday list — NOT the full
+ * CME holiday list. If the NYSE is closed, we skip the run even though
+ * Globex may be partially open.
+ *
+ * KNOWN LIMITATIONS:
+ *   - Early-close days (Black Friday, Christmas Eve, July 3 half-day etc.)
+ *     are NOT flagged. The 16:05 post-close run will still fire and read
+ *     the RTH session; the data will be correct because RTH closes early
+ *     on those days, but the report's narrative should note the short day.
+ *   - CME-only holidays (if NYSE is open but CME is closed) are rare and
+ *     not handled. If this becomes an issue, layer a CME check on top.
+ *
+ * Update NYSE_HOLIDAYS each year before the calendar runs out.
+ * ────────────────────────────────────────────────────────────────────────────
  *
  * Provides:
- *   isTradingDay(dateStr)  — true if the given YYYY-MM-DD is a market-open day
- *   todayET()              — YYYY-MM-DD in Eastern Time
- *   nextTradingDay(dateStr) — next trading day after the given date
- *
- * Holiday list covers 2025–2027. Update NYSE_HOLIDAYS each year.
+ *   isTradingDay(dateStr)   — true if the given YYYY-MM-DD is an NYSE-open day
+ *   todayET()               — YYYY-MM-DD in Eastern Time
+ *   nextTradingDay(dateStr) — next NYSE-open day after the given date
+ *   prevTradingDay(dateStr) — previous NYSE-open day before the given date
+ *   isEarlyCloseDay(dateStr) — true if NYSE closes early (13:00 ET) on that day
  */
 
 // ─── NYSE Holiday List ────────────────────────────────────────────────────────
@@ -51,6 +78,25 @@ const NYSE_HOLIDAYS = new Set([
   '2027-12-24', // Christmas observed (Dec 25 = Saturday)
 ]);
 
+// ─── Early-Close Days (NYSE closes 13:00 ET) ──────────────────────────────────
+// Market is OPEN on these days but shortened. Scheduler still fires both runs;
+// post-close report should note the short session.
+
+const NYSE_EARLY_CLOSE = new Set([
+  // 2025
+  '2025-07-03', // Day before Independence Day
+  '2025-11-28', // Black Friday (day after Thanksgiving)
+  '2025-12-24', // Christmas Eve
+  // 2026
+  // Jul 3 2026 is a full holiday (observed), no early-close
+  '2026-11-27', // Black Friday
+  '2026-12-24', // Christmas Eve
+  // 2027 — verify before the year starts; NYSE publishes the official list
+  '2027-07-02', // Day before Jul 4 observed (Jul 4 = Sunday)
+  '2027-11-26', // Black Friday
+  '2027-12-23', // Day before Christmas Eve (Dec 24 = Friday full close; Dec 25 = Saturday)
+]);
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Return today as YYYY-MM-DD in US Eastern Time. */
@@ -83,6 +129,14 @@ export function nextTradingDay(dateStr) {
     if (isTradingDay(candidate)) return candidate;
   }
   return null;
+}
+
+/**
+ * Return true if the given date is a NYSE early-close day (13:00 ET close).
+ * Market is open; post-close runs at 16:05 ET will see a stale final bar.
+ */
+export function isEarlyCloseDay(dateStr) {
+  return NYSE_EARLY_CLOSE.has(dateStr);
 }
 
 /**

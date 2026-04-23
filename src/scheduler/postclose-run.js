@@ -29,12 +29,16 @@ try {
   await ensureTVLive();
   log('[postclose] TV connected — generating report...');
 
-  const report = await generatePostCloseReport({ date });
+  const result = await generatePostCloseReport({ date });
 
-  const dayType = report?.actual_day_type ?? 'unknown';
-  const status  = report?.status ?? 'unknown';
-  log(`[postclose] ✓ Complete — status: ${status}, day type: ${dayType}`);
-  process.exit(0);
+  // generatePostCloseReport returns { success, path, report, error? }
+  const r       = result?.report ?? {};
+  const status  = r.status ?? 'unknown';
+  const dayType = r.actual_day_type ?? 'unknown';
+  const range   = r.actual_session?.range_points ?? 'n/a';
+  const path    = result?.path ?? '(not saved)';
+  log(`[postclose] ✓ Complete — status: ${status}, day_type: ${dayType}, range: ${range}pts, saved: ${path}`);
+  process.exit(result?.success ? 0 : 1);
 
 } catch (err) {
   log(`[postclose] ✗ FAILED: ${err.message}`);

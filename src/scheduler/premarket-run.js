@@ -29,12 +29,15 @@ try {
   await ensureTVLive();
   log('[premarket] TV connected — generating report...');
 
-  const report = await generatePremarketReport({ date });
+  const result = await generatePremarketReport({ date });
 
-  const bias   = report?.indicator_snapshot?.bias_label ?? 'unknown';
-  const status = report?.status ?? 'unknown';
-  log(`[premarket] ✓ Complete — status: ${status}, bias: ${bias}`);
-  process.exit(0);
+  // generatePremarketReport returns { success, path, report, error? }
+  const r      = result?.report ?? {};
+  const status = r.status ?? 'unknown';
+  const bias   = r.bias ?? r.indicator_snapshot?.bias_label ?? 'unknown';
+  const path   = result?.path ?? '(not saved)';
+  log(`[premarket] ✓ Complete — status: ${status}, bias: ${bias}, saved: ${path}`);
+  process.exit(result?.success ? 0 : 1);
 
 } catch (err) {
   log(`[premarket] ✗ FAILED: ${err.message}`);
