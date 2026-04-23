@@ -1,0 +1,33 @@
+{
+  "name": "nq-daily-bias-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local MVP dashboard for the NQ Daily Bias Engine — reads artifacts produced by Stages 1–5 into SQLite and renders them as a Next.js app.",
+  "scripts": {
+    "dev":      "next dev -p 3000",
+    "build":    "next build",
+    "start":    "next start -p 3000",
+    "lint":     "next lint",
+    "db:init":  "tsx scripts/init-db.ts",
+    "db:sync":  "tsx scripts/sync-db.ts",
+    "app:sync": "tsx scripts/sync-db.ts",
+    "app:full": "tsx scripts/init-db.ts && tsx scripts/sync-db.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "next": "14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.12.12",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.41",
+    "tailwindcss": "^3.4.10",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  }
+}
