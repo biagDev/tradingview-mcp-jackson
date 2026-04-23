@@ -46,16 +46,18 @@ try {
   log(`[premarket] Narrative — provider: ${narrProv}, chars: ${narrLen}, sections: ${narrSects}`);
 
   // Stage 6A enhancement: auto-sync the web app DB so the dashboard updates
-  // without requiring `npm run db:sync` or a running app server.
+  // without requiring `npm run db:sync` or a running app server. Implementation
+  // is in-process (no subprocess) so macOS cron's minimal PATH is irrelevant.
   if (result?.success) {
+    log(`[premarket] App sync → attempting (method: in-process)...`);
     const sync = syncAppDatabase();
     if (sync.success) {
       const c = sync.counts ?? {};
-      log(`[premarket] App sync ✓ — premarket=${c.premarket ?? '?'} postclose=${c.postclose ?? '?'} snapshots=${c.snapshots ?? '?'} models=${c.models ?? '?'} shadow=${c.shadow ?? '?'}`);
+      log(`[premarket] App sync ✓ — method=${sync.method}, ${sync.duration_ms}ms, premarket=${c.premarket ?? '?'} postclose=${c.postclose ?? '?'} snapshots=${c.snapshots ?? '?'} breakdowns=${c.breakdowns ?? '?'} models=${c.models ?? '?'} shadow=${c.shadow ?? '?'} system=${c.system ?? '?'}`);
     } else if (sync.skipped) {
-      log(`[premarket] App sync skipped — ${sync.reason}`);
+      log(`[premarket] App sync skipped — method=${sync.method}, reason: ${sync.reason}`);
     } else {
-      log(`[premarket] App sync ✗ FAILED (non-fatal) — ${sync.error}`);
+      log(`[premarket] App sync ✗ FAILED (non-fatal) — method=${sync.method}, error: ${sync.error}`);
     }
   }
 

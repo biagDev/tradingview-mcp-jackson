@@ -1,65 +1,46 @@
 /**
- * Auto-sync the web app's SQLite DB after a scheduled pipeline run.
+ * Auto-sync the app's SQLite DB after a scheduled pipeline run.
  *
- * DIRECT LOCAL INVOCATION (preferred over HTTP)
- * ────────────────────────────────────────────
- * This module spawns `npm run db:sync` in ./web via execSync rather than
- * POSTing to http://localhost:3000/api/sync. Reasons:
+ * CRON-SAFE IMPLEMENTATION — IN-PROCESS, NO SUBPROCESS
+ * ────────────────────────────────────────────────────
+ * The previous implementation shelled out to `npm run db:sync`, which
+ * failed under macOS cron with "/bin/sh: npm: command not found" because
+ * cron's minimal PATH doesn't include `/opt/homebrew/bin`.
  *
- *   1. No Next.js dev server is required — cron fires at 09:00 / 16:05 ET
- *      regardless of whether the app is currently running.
- *   2. The same tsx script the developer uses manually is invoked
- *      end-to-end — zero behavioral drift between manual and scheduled sync.
- *   3. Failures stay local: subprocess exit code + stderr are captured and
- *      logged without affecting the rest of the pipeline.
+ * This version imports src/core/app-db-sync.js and calls it directly
+ * inside the scheduler's Node process:
  *
- * If `web/node_modules` is missing (i.e. `cd web && npm install` has never
- * been run), this module returns a `{ success: false, skipped: true }`
- * result and writes a clear log line — it never crashes the scheduler.
+ *   - No shell, no PATH dependency, no environment-variable surprises
+ *   - No tsx subprocess (the canonical sync is now pure JS)
+ *   - Fastest possible execution path (a single in-process function call)
+ *   - `npm run db:sync` (via web/lib/sync.ts) remains available for
+ *     manual use; both write the same DB via ON CONFLICT upserts.
+ *
+ * Returns `{ success, counts?, error?, skipped?, reason?, method, duration_ms }`.
+ * Never throws — callers log the result and continue.
  */
 
-import { execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { syncAllArtifacts, closeAppDb } from '../core/app-db-sync.js';
 
-const __dir     = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dir, '..', '..');            // src/scheduler → repo root
-const WEB_DIR   = join(REPO_ROOT, 'web');
-const NODE_MODULES = join(WEB_DIR, 'node_modules');
+const METHOD = 'in-process';
 
 /**
  * @param {object} [opts]
- * @param {number} [opts.timeout=30000]  ms before aborting the sync process
- * @returns {{ success: boolean, counts?: object, error?: string, skipped?: boolean, reason?: string }}
+ * @param {boolean} [opts.closeOnDone=true]  Close the DB handle after sync so
+ *   WAL is flushed and the app dev server sees the writes immediately.
  */
-export function syncAppDatabase({ timeout = 30000 } = {}) {
-  if (!existsSync(WEB_DIR)) {
-    return { success: false, skipped: true, reason: 'web directory missing' };
-  }
-  if (!existsSync(NODE_MODULES)) {
+export function syncAppDatabase({ closeOnDone = true } = {}) {
+  const t0 = Date.now();
+  try {
+    const result = syncAllArtifacts();
+    if (closeOnDone) { try { closeAppDb(); } catch { /* ignore */ } }
+    return { ...result, method: METHOD, duration_ms: Date.now() - t0 };
+  } catch (err) {
     return {
       success: false,
-      skipped: true,
-      reason: 'web app not installed — run `cd web && npm install` once',
+      method:  METHOD,
+      error:   err?.message ?? String(err),
+      duration_ms: Date.now() - t0,
     };
-  }
-
-  try {
-    const out = execSync('npm run db:sync', {
-      cwd:      WEB_DIR,
-      timeout,
-      encoding: 'utf8',
-      stdio:    ['ignore', 'pipe', 'pipe'],
-    });
-    // The sync script prints a JSON counts block after "✓ Sync complete".
-    const match = out.match(/\{[\s\S]*\}/);
-    let counts  = null;
-    if (match) { try { counts = JSON.parse(match[0]); } catch { /* ignore */ } }
-    return { success: true, counts };
-  } catch (err) {
-    // execSync bundles stderr into err.stderr; surface a concise message.
-    const msg = err?.stderr?.toString?.().trim() || err?.message || String(err);
-    return { success: false, error: msg.slice(0, 500) };
   }
 }
