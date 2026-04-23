@@ -19,6 +19,7 @@ import { registerReportTools } from "./tools/reports.js";
 import { registerGradingTools } from "./tools/grading.js";
 import { registerAnalyticsTools } from "./tools/analytics.js";
 import { registerDatasetTools } from "./tools/dataset.js";
+import { registerModelingTools } from "./tools/modeling.js";
 
 const server = new McpServer(
   {
@@ -95,6 +96,7 @@ registerReportTools(server);
 registerGradingTools(server);
 registerAnalyticsTools(server);
 registerDatasetTools(server);
+registerModelingTools(server);
 
 // Startup notice (stderr so it doesn't interfere with MCP stdio protocol)
 process.stderr.write(

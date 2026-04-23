@@ -31,6 +31,7 @@ import "./commands/scheduler.js";
 import "./commands/grading.js";
 import "./commands/analytics.js";
 import "./commands/dataset.js";
+import "./commands/modeling.js";
 
 // Run
 import { run } from "./router.js";

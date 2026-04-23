@@ -17,6 +17,7 @@ import { generatePostCloseReport } from '../core/reports.js';
 import { gradeTradingDate } from '../core/grading.js';
 import { rebuildAnalytics } from '../core/analytics.js';
 import { rebuildDataset } from '../core/dataset.js';
+import { trainAllModels, predictLatestShadow } from '../core/modeling.js';
 
 const date = todayET();
 
@@ -69,6 +70,22 @@ try {
       log(`[postclose] Dataset rebuilt — canonical=${d.counts.canonical_rows}, training_ready=${d.counts.training_ready_rows}, splits=${d.counts.train_rows}/${d.counts.validation_rows}/${d.counts.test_rows}`);
     } catch (dsErr) {
       log(`[postclose] Dataset rebuild error (non-fatal): ${dsErr.message}`);
+    }
+
+    // Stage 5: shadow-mode retrain + predict (rules engine still production)
+    try {
+      const t = trainAllModels();
+      const tasks = Object.entries(t.summary?.per_task ?? {}).map(([k, v]) => `${k}=${v.status}`).join(' ');
+      log(`[postclose] Models trained — ${tasks}`);
+    } catch (mErr) {
+      log(`[postclose] Model training error (non-fatal): ${mErr.message}`);
+    }
+    try {
+      const p = predictLatestShadow();
+      const shadowTasks = Object.keys(p.predictions ?? {}).length;
+      log(`[postclose] Shadow predictions written for ${shadowTasks} tasks (shadow mode only)`);
+    } catch (spErr) {
+      log(`[postclose] Shadow predict error (non-fatal): ${spErr.message}`);
     }
   }
 
