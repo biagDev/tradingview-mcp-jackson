@@ -17,3 +17,4 @@ export * as ui from './ui.js';
 export * as reports from './reports.js';
 export * as grading from './grading.js';
 export * as analytics from './analytics.js';
+export * as dataset from './dataset.js';
