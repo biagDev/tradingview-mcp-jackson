@@ -361,22 +361,129 @@ function normalizeBias(biasLabel) {
   return 'neutral';
 }
 
-function normalizeDayType(kv) {
+/**
+ * Derive the predicted day type from DBE state.
+ *
+ * Primary source — the DBE's own probability rows (TREND/NORMAL, RANGE/INSIDE).
+ *   → pick the highest-probability bucket.
+ *
+ * Fallback — when all four probabilities are 0 (DBE was reset after RTH close,
+ * or has not yet computed today's distribution), infer from bias strength and
+ * volatility regime (both of which are always present in the KV table):
+ *
+ *     |bias_total| >= 4  AND  regime == EXPANSION     → 'trending'
+ *     |bias_total| <= 2  AND  regime == CONTRACTION   → 'range'
+ *     |bias_total| <= 2  AND  regime == NORMAL        → 'range'
+ *     otherwise                                       → 'normal'
+ *
+ * Returns { type, source } where source ∈ {'dbe_probs','inferred_bias_regime','none'}.
+ */
+function resolveDayType(kv) {
   const trend  = parsePct((kv['TREND/NORMAL']  || '').split(' / ')[0]);
   const normal = parsePct((kv['TREND/NORMAL']  || '').split(' / ')[1]);
   const range  = parsePct((kv['RANGE/INSIDE']  || '').split(' / ')[0]);
   const inside = parsePct((kv['RANGE/INSIDE']  || '').split(' / ')[1]);
 
-  if (trend === null) return 'pending';
+  // If any probability row is entirely missing, we can't use the primary path.
+  const haveProbs = [trend, normal, range, inside].every(v => v !== null);
 
-  const best = [
-    { type: 'trending', prob: trend  || 0 },
-    { type: 'normal',   prob: normal || 0 },
-    { type: 'range',    prob: range  || 0 },
-    { type: 'inside',   prob: inside || 0 },
-  ].sort((a, b) => b.prob - a.prob)[0];
+  if (haveProbs && (trend + normal + range + inside) > 0) {
+    const best = [
+      { type: 'trending', prob: trend  },
+      { type: 'normal',   prob: normal },
+      { type: 'range',    prob: range  },
+      { type: 'inside',   prob: inside },
+    ].sort((a, b) => b.prob - a.prob)[0];
+    return { type: best.type, source: 'dbe_probs' };
+  }
 
-  return best.prob > 0 ? best.type : 'pending';
+  // Fallback: infer from bias magnitude + regime
+  const biasTotal = pf((kv['TOTAL / BIAS'] || '').split(' — ')[0]);
+  const regimeKey = Object.keys(kv).find(k => /^(EXPANSION|CONTRACTION|NORMAL)$/.test(k));
+
+  if (biasTotal != null && regimeKey) {
+    const absBias = Math.abs(biasTotal);
+    let type;
+    if      (absBias >= 4 && regimeKey === 'EXPANSION')                         type = 'trending';
+    else if (absBias <= 2 && (regimeKey === 'CONTRACTION' || regimeKey === 'NORMAL')) type = 'range';
+    else                                                                        type = 'normal';
+    return { type, source: 'inferred_bias_regime' };
+  }
+
+  return { type: 'pending', source: 'none' };
+}
+
+/** Parse the ATR value from the regime detail string (e.g. "ATR:441.27 5d:356.85"). */
+function parseATR(regimeDetail) {
+  if (!regimeDetail) return null;
+  const m = String(regimeDetail).match(/ATR:([\d.]+)/);
+  return m ? parseFloat(m[1]) : null;
+}
+
+/**
+ * Resolve the expected range for the upcoming RTH session.
+ *
+ * Priority cascade (whichever yields a usable high/low pair first):
+ *   1. Explicit DBE labels: 'Expected High' / 'Expected Low'
+ *      (reserved for future DBE versions — not currently emitted).
+ *   2. Value Area: VAH~ / VAL~ from the indicator snapshot.
+ *      These represent the ~70% acceptance zone from prior-day volume —
+ *      a reasonable forward-looking expected zone.
+ *   3. ATR-derived symmetric band: PDC ± ATR/2 (one ATR of total range).
+ *
+ * Returns { high, low, points, rth_open, ib_high, ib_low, source } where
+ * source ∈ {'dbe_label','value_area','atr_derived','none'}.
+ */
+function resolveExpectedRange({ labels, snapshot }) {
+  const findLabel = prefix => labels.find(l => l.text?.startsWith(prefix));
+  const rth_open  = findLabel('RTH Open')?.price   ?? null;
+  const ib_high   = findLabel('IB High')?.price    ?? null;
+  const ib_low    = findLabel('IB Low')?.price     ?? null;
+
+  // 1. Explicit DBE labels (not currently emitted but respect them if present)
+  const lblHi = findLabel('Expected High')?.price;
+  const lblLo = findLabel('Expected Low')?.price;
+  if (lblHi != null && lblLo != null) {
+    return {
+      high: lblHi, low: lblLo,
+      points: Math.round(lblHi - lblLo),
+      rth_open, ib_high, ib_low,
+      source: 'dbe_label',
+    };
+  }
+
+  // 2. Value Area (VAH~/VAL~)
+  const vah = snapshot?.value_area?.vah ?? null;
+  const val = snapshot?.value_area?.val ?? null;
+  if (vah != null && val != null && vah > val) {
+    return {
+      high: vah, low: val,
+      points: Math.round(vah - val),
+      rth_open, ib_high, ib_low,
+      source: 'value_area',
+    };
+  }
+
+  // 3. ATR-derived band around prior close
+  const pdc = snapshot?.prior_day?.pdc ?? null;
+  const atr = parseATR(snapshot?.regime_detail);
+  if (pdc != null && atr != null && atr > 0) {
+    const hi = pdc + atr / 2;
+    const lo = pdc - atr / 2;
+    return {
+      high: Math.round(hi * 100) / 100,
+      low:  Math.round(lo * 100) / 100,
+      points: Math.round(atr),
+      rth_open, ib_high, ib_low,
+      source: 'atr_derived',
+    };
+  }
+
+  return {
+    high: null, low: null, points: null,
+    rth_open, ib_high, ib_low,
+    source: 'none',
+  };
 }
 
 // ─── Base Report Skeletons ─────────────────────────────────────────────────
@@ -531,13 +638,10 @@ export async function generatePremarketReport({ date, narrative } = {}) {
       completeness:  tableRows.length >= 25 ? 'full' : tableRows.length > 0 ? 'partial' : 'none',
     };
 
-    // Extract key labels for expected range and IB
-    const findLabel = prefix => labels.find(l => l.text?.startsWith(prefix));
-    const expHigh  = findLabel('Expected High')?.price || null;
-    const expLow   = findLabel('Expected Low')?.price  || null;
-    const rthOpen  = findLabel('RTH Open')?.price      || null;
-    const ibHigh   = findLabel('IB High')?.price       || null;
-    const ibLow    = findLabel('IB Low')?.price        || null;
+    // Resolve expected range (Value Area → ATR fallback) and day type
+    // (DBE probabilities → bias+regime inference fallback)
+    const expectedRange = resolveExpectedRange({ labels, snapshot });
+    const dayType       = resolveDayType(kv);
 
     // Bias
     const biasRaw  = (kv['TOTAL / BIAS'] || '').split(' — ');
@@ -549,10 +653,17 @@ export async function generatePremarketReport({ date, narrative } = {}) {
       status:            'success',
       bias:              normalizeBias(biasTxt),
       confidence:        biasNum !== null ? Math.abs(biasNum) : null,
-      day_type:          normalizeDayType(kv),
-      expected_range:    { low: expLow, high: expHigh,
-                           points: expHigh && expLow ? Math.round(expHigh - expLow) : null,
-                           rth_open: rthOpen, ib_high: ibHigh, ib_low: ibLow },
+      day_type:          dayType.type,
+      day_type_source:   dayType.source,
+      expected_range:    {
+        low:      expectedRange.low,
+        high:     expectedRange.high,
+        points:   expectedRange.points,
+        rth_open: expectedRange.rth_open,
+        ib_high:  expectedRange.ib_high,
+        ib_low:   expectedRange.ib_low,
+        source:   expectedRange.source,
+      },
       volatility_regime: snapshot.regime,
       gap_analysis:      snapshot.gap,
       session_structure: {

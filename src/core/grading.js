@@ -71,12 +71,12 @@ const GRADE_CUTOFFS = [
   { min:  0, grade: 'F' },
 ];
 
-// Ungradable dimensions receive this neutral score so overall grade is
-// neither inflated nor crushed by missing data.
-const UNGRADABLE_DIMENSION_SCORE = 50;
-
 // Schema version of the `grading` block we write into postclose_nq.json.
-const GRADING_SCHEMA_VERSION = 1;
+// v2: overall score is computed over GRADED dimensions only (exclude-and-
+//     reweight). Ungradable dimensions receive score=null and do NOT
+//     contribute to the weighted average. Coverage fields expose what
+//     fraction of the prediction was actually graded.
+const GRADING_SCHEMA_VERSION = 2;
 
 // ─── Date/Time Helpers ────────────────────────────────────────────────────────
 
@@ -165,17 +165,17 @@ function normalizeDayType(raw) {
 /**
  * Grade directional bias.
  * Returns { called, actual, correct, score, reason }.
- * `correct` is null when either side cannot be determined.
+ * When ungradable, score is null (excluded from weighted overall).
  */
 function gradeBias(premarket, postclose) {
   const called = normalizePredictedBias(premarket?.bias);
   const actual = classifyActualBias(postclose?.actual_session);
 
   if (called == null) {
-    return { called: null, actual, correct: null, score: UNGRADABLE_DIMENSION_SCORE, reason: 'no_predicted_bias' };
+    return { called: null, actual, correct: null, score: null, reason: 'no_predicted_bias' };
   }
   if (actual == null) {
-    return { called, actual: null, correct: null, score: UNGRADABLE_DIMENSION_SCORE, reason: 'no_actual_session' };
+    return { called, actual: null, correct: null, score: null, reason: 'no_actual_session' };
   }
 
   const correct = (called === actual);
@@ -183,22 +183,18 @@ function gradeBias(premarket, postclose) {
 }
 
 /**
- * Grade day-type prediction.
- * Predicted day_type comes from the premarket report. Actual day_type is
- * taken from the post-close report (which uses a range/ATR classifier in
- * core/reports.js). Exact match required.
- *
- * 'pending' predictions are treated as ungradable (not wrong).
+ * Grade day-type prediction. Exact match required.
+ * 'pending' predictions are ungradable (score=null), not wrong.
  */
 function gradeDayType(premarket, postclose) {
   const called = normalizeDayType(premarket?.day_type);
   const actual = normalizeDayType(postclose?.actual_day_type);
 
   if (called == null || called === 'pending') {
-    return { called: called ?? null, actual, correct: null, score: UNGRADABLE_DIMENSION_SCORE, reason: 'no_predicted_day_type' };
+    return { called: called ?? null, actual, correct: null, score: null, reason: 'no_predicted_day_type' };
   }
   if (actual == null) {
-    return { called, actual: null, correct: null, score: UNGRADABLE_DIMENSION_SCORE, reason: 'no_actual_day_type' };
+    return { called, actual: null, correct: null, score: null, reason: 'no_actual_day_type' };
   }
 
   const correct = (called === actual);
@@ -209,24 +205,26 @@ function gradeDayType(premarket, postclose) {
  * Grade expected-range accuracy.
  * within_tolerance = |actual - expected| / expected <= RANGE_TOLERANCE_PCT
  * Score = max(0, 100 - (error_pct * 100))  (clamped to 0..100)
+ * Ungradable → score is null.
  */
 function gradeRange(premarket, postclose) {
   const expected_pts = premarket?.expected_range?.points ?? null;
   const expected_lo  = premarket?.expected_range?.low    ?? null;
   const expected_hi  = premarket?.expected_range?.high   ?? null;
+  const expected_src = premarket?.expected_range?.source ?? null;
   const actual_lo    = postclose?.actual_session?.low    ?? null;
   const actual_hi    = postclose?.actual_session?.high   ?? null;
   const actual_pts   = postclose?.actual_session?.range_points ?? null;
 
   if (expected_pts == null || actual_pts == null || expected_pts <= 0) {
     return {
-      expected:        { low: expected_lo, high: expected_hi, points: expected_pts },
-      actual:          { low: actual_lo,   high: actual_hi,   points: actual_pts   },
-      error_points:    null,
-      error_pct:       null,
+      expected:         { low: expected_lo, high: expected_hi, points: expected_pts, source: expected_src },
+      actual:           { low: actual_lo,   high: actual_hi,   points: actual_pts   },
+      error_points:     null,
+      error_pct:        null,
       within_tolerance: null,
-      score:           UNGRADABLE_DIMENSION_SCORE,
-      reason:          expected_pts == null ? 'no_expected_range' : 'no_actual_range',
+      score:            null,
+      reason:           expected_pts == null ? 'no_expected_range' : 'no_actual_range',
     };
   }
 
@@ -236,7 +234,7 @@ function gradeRange(premarket, postclose) {
   const score        = Math.max(0, Math.min(100, Math.round(100 - error_pct * 100)));
 
   return {
-    expected:         { low: expected_lo, high: expected_hi, points: expected_pts },
+    expected:         { low: expected_lo, high: expected_hi, points: expected_pts, source: expected_src },
     actual:           { low: actual_lo,   high: actual_hi,   points: actual_pts   },
     error_points:     Math.round(error_points),
     error_pct:        Number(error_pct.toFixed(4)),
@@ -304,13 +302,33 @@ export function gradePostcloseReport({ premarket, postclose }) {
   const dayTypeR = gradeDayType(premarket, postclose);
   const rangeR   = gradeRange(premarket, postclose);
 
-  const score = Math.round(
-    WEIGHT_BIAS     * biasR.score +
-    WEIGHT_DAY_TYPE * dayTypeR.score +
-    WEIGHT_RANGE    * rangeR.score
-  );
-  const overall_grade = letterFromScore(score);
+  // ── Exclude-and-reweight scoring ──────────────────────────────────────────
+  // Dimensions whose score is null (ungradable) are excluded from the
+  // weighted average; remaining weights are normalized to sum to 1.
+  // Coverage fields report the fraction of prediction surface area that
+  // was actually graded, so a "90/100" on only the bias dimension doesn't
+  // look identical to a "90/100" on all three.
+  const dims = [
+    { key: 'bias',     weight: WEIGHT_BIAS,     score: biasR.score    },
+    { key: 'day_type', weight: WEIGHT_DAY_TYPE, score: dayTypeR.score },
+    { key: 'range',    weight: WEIGHT_RANGE,    score: rangeR.score   },
+  ];
+  const graded      = dims.filter(d => d.score !== null);
+  const ungraded    = dims.filter(d => d.score === null);
+  const weight_used = graded.reduce((s, d) => s + d.weight, 0);
 
+  const score_0_to_100 = weight_used > 0
+    ? Math.round(graded.reduce((s, d) => s + d.weight * d.score, 0) / weight_used)
+    : null;
+
+  const overall_grade = score_0_to_100 == null ? 'NG' : letterFromScore(score_0_to_100);
+
+  const coverage_pct        = Number(weight_used.toFixed(4));
+  const graded_dimensions   = graded.map(d => d.key);
+  const ungraded_dimensions = ungraded.map(d => d.key);
+  const partial_grade       = weight_used > 0 && weight_used < 1.0;
+
+  // ── Failure tags & notes ──────────────────────────────────────────────────
   const failure_tags = buildFailureTags({ premarket, postclose, biasR, dayTypeR, rangeR });
 
   const notes = [];
@@ -333,17 +351,24 @@ export function gradePostcloseReport({ premarket, postclose }) {
     day_type_correct:  dayTypeR.correct,
     day_type_score:    dayTypeR.score,
 
-    expected_range_called: rangeR.expected,
-    actual_range:          rangeR.actual,
+    expected_range_called:       rangeR.expected,
+    actual_range:                rangeR.actual,
     range_estimate_error_points: rangeR.error_points,
     range_estimate_error_pct:    rangeR.error_pct,
     range_within_tolerance:      rangeR.within_tolerance,
     range_score:                 rangeR.score,
 
     overall_grade,
-    score_0_to_100: score,
+    score_0_to_100,
+
+    // Coverage / partial-grade transparency (schema v2)
+    coverage_pct,
+    graded_dimensions,
+    ungraded_dimensions,
+    partial_grade,
 
     weights: { bias: WEIGHT_BIAS, day_type: WEIGHT_DAY_TYPE, range: WEIGHT_RANGE },
+    scoring_method: 'exclude_and_reweight',
     thresholds: {
       bias_move:        BIAS_MOVE_THRESHOLD,
       bias_close_bull:  BIAS_CLOSE_POS_BULLISH,
@@ -391,9 +416,14 @@ function buildLogRecord({ premarket, postclose, grading }) {
     range_estimate_error_pct:     grading.range_estimate_error_pct,
     range_within_tolerance:       grading.range_within_tolerance,
 
-    overall_grade:      grading.overall_grade,
-    score_0_to_100:     grading.score_0_to_100,
-    failure_tags:       grading.failure_tags,
+    overall_grade:       grading.overall_grade,
+    score_0_to_100:      grading.score_0_to_100,
+    coverage_pct:        grading.coverage_pct,
+    graded_dimensions:   grading.graded_dimensions,
+    ungraded_dimensions: grading.ungraded_dimensions,
+    partial_grade:       grading.partial_grade,
+    failure_tags:        grading.failure_tags,
+    expected_range_source: grading.expected_range_called?.source ?? null,
 
     calendar_source:    postclose?.calendar?.source       ?? premarket?.calendar?.source       ?? null,
     early_close:        postclose?.calendar?.early_close  ?? premarket?.calendar?.early_close  ?? null,
@@ -456,6 +486,8 @@ function tally(records) {
       range_within_tolerance_rate: null,
       average_range_error_points: null,
       average_score:              null,
+      average_coverage_pct:       null,
+      partial_grade_rate:         null,
       grade_distribution:         {},
     };
   }
@@ -465,6 +497,8 @@ function tally(records) {
   let rngHit  = 0, rngN  = 0;
   let rngErrSum = 0, rngErrN = 0;
   let scoreSum = 0, scoreN = 0;
+  let covSum   = 0, covN   = 0;
+  let partialN = 0;
   const grades = {};
 
   for (const r of records) {
@@ -487,6 +521,13 @@ function tally(records) {
       scoreN++;
     }
 
+    if (typeof r.coverage_pct === 'number') {
+      covSum += r.coverage_pct;
+      covN++;
+    }
+
+    if (r.partial_grade === true) partialN++;
+
     const g = r.overall_grade ?? '?';
     grades[g] = (grades[g] ?? 0) + 1;
   }
@@ -500,6 +541,8 @@ function tally(records) {
     range_within_tolerance_rate: rate(rngHit, rngN),
     average_range_error_points: rngErrN > 0 ? Math.round(rngErrSum / rngErrN) : null,
     average_score:              scoreN  > 0 ? Math.round(scoreSum / scoreN)   : null,
+    average_coverage_pct:       covN    > 0 ? Number((covSum / covN).toFixed(4)) : null,
+    partial_grade_rate:         rate(partialN, n),
     grade_distribution:         grades,
   };
 }
