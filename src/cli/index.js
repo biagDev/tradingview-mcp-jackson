@@ -33,6 +33,7 @@ import "./commands/analytics.js";
 import "./commands/dataset.js";
 import "./commands/modeling.js";
 import "./commands/backfill.js";
+import "./commands/edge.js";
 
 // Run
 import { run } from "./router.js";

@@ -9,6 +9,7 @@ const NAV = [
   { href: '/misses',    label: 'Recent Misses' },
   { href: '/models',    label: 'Models' },
   { href: '/shadow',    label: 'Shadow ML' },
+  { href: '/edge',      label: 'Edge (ML Research)' },
   { href: '/system',    label: 'System' },
 ];
 

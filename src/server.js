@@ -21,6 +21,7 @@ import { registerAnalyticsTools } from "./tools/analytics.js";
 import { registerDatasetTools } from "./tools/dataset.js";
 import { registerModelingTools } from "./tools/modeling.js";
 import { registerBackfillTools } from "./tools/backfill.js";
+import { registerEdgeTools } from "./tools/edge.js";
 
 const server = new McpServer(
   {
@@ -99,6 +100,7 @@ registerAnalyticsTools(server);
 registerDatasetTools(server);
 registerModelingTools(server);
 registerBackfillTools(server);
+registerEdgeTools(server);
 
 // Startup notice (stderr so it doesn't interfere with MCP stdio protocol)
 process.stderr.write(

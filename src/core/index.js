@@ -20,3 +20,5 @@ export * as analytics from './analytics.js';
 export * as dataset from './dataset.js';
 export * as modeling from './modeling.js';
 export * as backfill from './backfill.js';
+export * as edge from './edge.js';
+export * as edgeWeights from './edge-weights.js';

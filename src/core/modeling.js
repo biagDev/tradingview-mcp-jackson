@@ -344,13 +344,18 @@ function predictMean(model, X) {
 
 function sigmoid(z) { return 1 / (1 + Math.exp(-z)); }
 
-function fitLogisticBinary(X, y, { l2 = 0.1, lr = GRADIENT_LEARNING_RATE, max_iter = GRADIENT_MAX_ITER, seed = DETERMINISTIC_SEED } = {}) {
+function fitLogisticBinary(X, y, { l2 = 0.1, lr = GRADIENT_LEARNING_RATE, max_iter = GRADIENT_MAX_ITER, seed = DETERMINISTIC_SEED, weights = null } = {}) {
   const n = X.length;
   if (n === 0) return null;
   const d = X[0].length;
   const rand = makePRNG(seed);
   let w = Array.from({ length: d }, () => (rand() - 0.5) * 0.01);
   let b = 0;
+
+  // Stage 7: sample weights (uniform when null). Sum replaces n in gradient
+  // averages so degraded rows pull proportionally less on the weight updates.
+  const wts = weights ?? new Array(n).fill(1);
+  const sumW = wts.reduce((s, v) => s + v, 0) || 1;
 
   let prev_loss = Infinity;
   for (let iter = 0; iter < max_iter; iter++) {
@@ -359,31 +364,29 @@ function fitLogisticBinary(X, y, { l2 = 0.1, lr = GRADIENT_LEARNING_RATE, max_it
       for (let j = 0; j < d; j++) z += row[j] * w[j];
       return sigmoid(z);
     });
-    // gradients
     const gw = new Array(d).fill(0);
     let gb = 0;
     let loss = 0;
     for (let i = 0; i < n; i++) {
       const err = preds[i] - y[i];
-      for (let j = 0; j < d; j++) gw[j] += err * X[i][j];
-      gb += err;
+      const wi  = wts[i];
+      for (let j = 0; j < d; j++) gw[j] += wi * err * X[i][j];
+      gb += wi * err;
       const p = Math.max(1e-12, Math.min(1 - 1e-12, preds[i]));
-      loss += -(y[i] * Math.log(p) + (1 - y[i]) * Math.log(1 - p));
+      loss += -wi * (y[i] * Math.log(p) + (1 - y[i]) * Math.log(1 - p));
     }
-    loss /= n;
-    for (let j = 0; j < d; j++) gw[j] = gw[j] / n + l2 * w[j];
-    gb /= n;
-    // l2 loss term
+    loss /= sumW;
+    for (let j = 0; j < d; j++) gw[j] = gw[j] / sumW + l2 * w[j];
+    gb /= sumW;
     for (let j = 0; j < d; j++) loss += (l2 / 2) * w[j] * w[j];
 
-    // update
     for (let j = 0; j < d; j++) w[j] -= lr * gw[j];
     b -= lr * gb;
 
     if (Math.abs(prev_loss - loss) < GRADIENT_TOL) break;
     prev_loss = loss;
   }
-  return { family: 'logreg_binary', weights: w, intercept: b, d };
+  return { family: 'logreg_binary', weights: w, intercept: b, d, weighted: !!weights };
 }
 
 function predictLogisticBinary(model, X) {
@@ -400,9 +403,9 @@ function fitLogisticMulticlass(X, y, classes, opts) {
   const binary = {};
   for (const c of classes) {
     const yBin = y.map(v => String(v) === String(c) ? 1 : 0);
-    binary[String(c)] = fitLogisticBinary(X, yBin, opts);
+    binary[String(c)] = fitLogisticBinary(X, yBin, opts);  // opts.weights flows through
   }
-  return { family: 'logreg_multiclass', classes: classes.map(String), binary };
+  return { family: 'logreg_multiclass', classes: classes.map(String), binary, weighted: !!opts?.weights };
 }
 
 function predictLogisticMulticlass(model, X) {
@@ -424,13 +427,17 @@ function predictLogisticMulticlass(model, X) {
 
 // ─── Ridge regression via gradient descent ────────────────────────────────────
 
-function fitRidge(X, y, { alpha = 1.0, lr = GRADIENT_LEARNING_RATE, max_iter = GRADIENT_MAX_ITER, seed = DETERMINISTIC_SEED } = {}) {
+function fitRidge(X, y, { alpha = 1.0, lr = GRADIENT_LEARNING_RATE, max_iter = GRADIENT_MAX_ITER, seed = DETERMINISTIC_SEED, weights = null } = {}) {
   const n = X.length;
   if (n === 0) return null;
   const d = X[0].length;
   const rand = makePRNG(seed);
   let w = Array.from({ length: d }, () => (rand() - 0.5) * 0.01);
   let b = 0;
+
+  // Stage 7: per-row weights
+  const wts = weights ?? new Array(n).fill(1);
+  const sumW = wts.reduce((s, v) => s + v, 0) || 1;
 
   // Standardize target for stability (store mean/std, unstandardize at predict time)
   const yMean = mean(y);
@@ -449,13 +456,14 @@ function fitRidge(X, y, { alpha = 1.0, lr = GRADIENT_LEARNING_RATE, max_iter = G
     let loss = 0;
     for (let i = 0; i < n; i++) {
       const err = preds[i] - yN[i];
-      for (let j = 0; j < d; j++) gw[j] += 2 * err * X[i][j];
-      gb += 2 * err;
-      loss += err * err;
+      const wi  = wts[i];
+      for (let j = 0; j < d; j++) gw[j] += 2 * wi * err * X[i][j];
+      gb += 2 * wi * err;
+      loss += wi * err * err;
     }
-    loss /= n;
-    for (let j = 0; j < d; j++) gw[j] = gw[j] / n + 2 * alpha * w[j];
-    gb /= n;
+    loss /= sumW;
+    for (let j = 0; j < d; j++) gw[j] = gw[j] / sumW + 2 * alpha * w[j];
+    gb /= sumW;
     for (let j = 0; j < d; j++) loss += alpha * w[j] * w[j];
 
     for (let j = 0; j < d; j++) w[j] -= lr * gw[j];
@@ -464,7 +472,7 @@ function fitRidge(X, y, { alpha = 1.0, lr = GRADIENT_LEARNING_RATE, max_iter = G
     if (Math.abs(prev_loss - loss) < GRADIENT_TOL) break;
     prev_loss = loss;
   }
-  return { family: 'ridge', weights: w, intercept: b, d, y_mean: yMean, y_std: yStd };
+  return { family: 'ridge', weights: w, intercept: b, d, y_mean: yMean, y_std: yStd, weighted: !!weights };
 }
 
 function predictRidge(model, X) {
@@ -625,19 +633,17 @@ function encodeClassLabel(y, classes) {
   return String(y);
 }
 
-function fitCandidate(cand, X, y, task, pre) {
+function fitCandidate(cand, X, y, task, pre, weights = null) {
   if (cand.family === 'logreg') {
     if (task.kind === 'classification_binary') {
       const yBin = y.map(v => (v === true || v === 'true' || v === 1) ? 1 : 0);
-      return fitLogisticBinary(X, yBin, { l2: cand.l2 });
+      return fitLogisticBinary(X, yBin, { l2: cand.l2, weights });
     }
-    // multiclass
     const classes = [...new Set(y.map(String))];
-    const model = fitLogisticMulticlass(X, y.map(String), classes, { l2: cand.l2 });
-    return model;
+    return fitLogisticMulticlass(X, y.map(String), classes, { l2: cand.l2, weights });
   }
   if (cand.family === 'ridge') {
-    return fitRidge(X, y.map(Number), { alpha: cand.alpha });
+    return fitRidge(X, y.map(Number), { alpha: cand.alpha, weights });
   }
   throw new Error(`Unknown family: ${cand.family}`);
 }
@@ -815,15 +821,29 @@ export function trainTaskModel({ task: taskName, overwrite = true } = {}) {
   const yVal   = valLabeled.map(r => r.y);
   const yTest  = testLabeled.map(r => r.y);
 
-  // Fit every candidate
+  // Stage 7: per-row sample weights (computed in Stage 4 with the backfill /
+  // fidelity scheme). Falls back to 1.0 for rows where the field is absent.
+  const wTrain = trainLabeled.map(r => {
+    const w = r.row?.quality?.sample_weight;
+    return typeof w === 'number' ? w : 1;
+  });
+  const weightsSummary = {
+    train_n:       wTrain.length,
+    train_sum:     Math.round(wTrain.reduce((s, v) => s + v, 0) * 1000) / 1000,
+    train_mean:    wTrain.length ? Math.round((wTrain.reduce((s, v) => s + v, 0) / wTrain.length) * 1000) / 1000 : null,
+    train_min:     wTrain.length ? Math.min(...wTrain) : null,
+    train_max:     wTrain.length ? Math.max(...wTrain) : null,
+  };
+
+  // Fit every candidate (weighted)
   const candidateResults = [];
   for (const cand of task.candidates) {
     let model, valPred, valMetrics;
     try {
-      model = fitCandidate(cand, Xtrain, yTrain, task, pre);
+      model = fitCandidate(cand, Xtrain, yTrain, task, pre, wTrain);
       const p = predictCandidate(model, Xval, task);
       valPred = p.predictions;
-      valMetrics = evalPredictions(yVal, valPred, task);
+      valMetrics = evalPredictions(yVal, valPred, task);  // UNWEIGHTED — honest eval
     } catch (err) {
       candidateResults.push({ name: cand.name, family: cand.family, error: err.message });
       continue;
@@ -924,6 +944,7 @@ export function trainTaskModel({ task: taskName, overwrite = true } = {}) {
     champion_metric: task.champion_metric,
     validation: champion?.validation ?? null,
     test: testMetrics,
+    weights_summary: weightsSummary,
     all_candidates: candidateResults.map(c => ({
       name: c.name, family: c.family, params: c.params ?? null,
       validation: c.validation, champion_metric_value: c.champion_metric_value,

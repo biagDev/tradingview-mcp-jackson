@@ -56,6 +56,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { computeSampleWeight } from './edge-weights.js';
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
@@ -487,12 +488,21 @@ export function buildCanonicalDatasetRow({ date, premarket, postclose, grade, al
   const nullLabels   = nullLabelsList(labels);
 
   const elig = computeEligibility({ features, labels, lineage, featureCov });
-  const sample_weight = elig.is_eligible ? round(0.5 + 0.5 * featureCov, 4) : 0;
+  // Stage 7: weight scheme respects is_backfill + replay_fidelity + data_quality.
+  // Fallback to legacy coverage-only weight if the edge module isn't available.
+  const weightObj = computeSampleWeight({
+    premarket,
+    postclose,
+    quality: { is_training_eligible: elig.is_eligible, feature_coverage_pct: featureCov },
+  });
+  const sample_weight = weightObj.weight;
 
   const quality = {
     is_training_eligible:  elig.is_eligible,
     excluded_reasons:      elig.excluded_reasons,
     sample_weight,
+    sample_weight_reason:  weightObj.reason,
+    sample_weight_tags:    weightObj.tags,
     feature_coverage_pct:  featureCov,
     label_coverage_pct:    labelCov,
     null_features:         nullFeatures,
