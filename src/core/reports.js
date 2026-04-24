@@ -560,7 +560,7 @@ function basePostclose(dateStr, runTimeET, runTimeUtc) {
  *                                  Pass the full brief text here when calling after generating it.
  * @returns {{ success: boolean, path?: string, report: object, error?: string }}
  */
-export async function generatePremarketReport({ date, narrative } = {}) {
+export async function generatePremarketReport({ date, narrative, backfill_metadata = null } = {}) {
   const dateStr    = date || todayET();
   const runTimeUtc = nowISO();
   const runTimeET  = nowET();
@@ -707,6 +707,13 @@ export async function generatePremarketReport({ date, narrative } = {}) {
       report.narrative_metadata = gen.metadata;
     }
 
+    // Backfill provenance — when provided, stamps the report as a replay-based
+    // historical backfill rather than a live scheduled run.
+    if (backfill_metadata) {
+      report.is_backfill        = true;
+      report.backfill_metadata  = backfill_metadata;
+    }
+
     const saved = saveReport({ report_type: 'premarket_report', date: dateStr, data: report });
     return { success: true, path: saved.path, report };
 
@@ -729,7 +736,7 @@ export async function generatePremarketReport({ date, narrative } = {}) {
  * @param {string} [opts.narrative] Optional narrative text (post-close review summary).
  * @returns {{ success: boolean, path?: string, report: object, error?: string }}
  */
-export async function generatePostCloseReport({ date, narrative } = {}) {
+export async function generatePostCloseReport({ date, narrative, backfill_metadata = null } = {}) {
   const dateStr    = date || todayET();
   const runTimeUtc = nowISO();
   const runTimeET  = nowET();
@@ -864,6 +871,12 @@ export async function generatePostCloseReport({ date, narrative } = {}) {
         labels,
       },
     };
+
+    // Backfill provenance (see generatePremarketReport for rationale)
+    if (backfill_metadata) {
+      report.is_backfill       = true;
+      report.backfill_metadata = backfill_metadata;
+    }
 
     const saved = saveReport({ report_type: 'postclose_report', date: dateStr, data: report });
     return { success: true, path: saved.path, report };

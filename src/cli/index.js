@@ -32,6 +32,7 @@ import "./commands/grading.js";
 import "./commands/analytics.js";
 import "./commands/dataset.js";
 import "./commands/modeling.js";
+import "./commands/backfill.js";
 
 // Run
 import { run } from "./router.js";

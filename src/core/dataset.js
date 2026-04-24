@@ -285,6 +285,9 @@ const METADATA_FIELDS = [
   'calendar_source', 'early_close',
   'run_time_et', 'run_time_utc',
   'graded_at_utc',
+  // Backfill provenance (Stage: replay harness) — useful for Stage 5
+  // to filter / downweight replay-derived rows vs live runs.
+  'is_backfill', 'backfill_batch_id', 'replay_fidelity',
 ];
 
 // ─── Derived feature resolvers ────────────────────────────────────────────────
@@ -461,6 +464,10 @@ export function buildCanonicalDatasetRow({ date, premarket, postclose, grade, al
     run_time_et:        premarket?.run_time_et  ?? null,
     run_time_utc:       premarket?.run_time_utc ?? null,
     graded_at_utc:      grade?.graded_at_utc    ?? postclose?.grading?.graded_at_utc ?? null,
+    // Backfill provenance (populated only for replay-derived reports)
+    is_backfill:        premarket?.is_backfill ?? postclose?.is_backfill ?? false,
+    backfill_batch_id:  premarket?.backfill_metadata?.batch_id ?? postclose?.backfill_metadata?.batch_id ?? null,
+    replay_fidelity:    premarket?.backfill_metadata?.replay_fidelity ?? postclose?.backfill_metadata?.replay_fidelity ?? null,
   };
 
   const lineage = {
