@@ -45,9 +45,12 @@ function writeCrontab(content) {
 }
 
 function buildCronLines() {
-  // TZ header + two entries. Using cron TZ directive (supported on macOS & most Linux).
+  // TZ header + env vars + two entries. Using cron TZ directive (supported on macOS & most Linux).
+  // DISPLAY is set so TradingView can auto-launch on headless Linux servers (Xvfb :1).
+  const display = process.env.DISPLAY || ':1';
   return [
     `TZ=America/New_York ${CRON_MARKER}`,
+    `DISPLAY=${display} ${CRON_MARKER}`,
     `0 9 * * 1-5 "${NODE_BIN}" "${PREMARKET_SCRIPT}" >> "${LOG_FILE}" 2>&1 ${CRON_MARKER}`,
     `5 16 * * 1-5 "${NODE_BIN}" "${POSTCLOSE_SCRIPT}" >> "${LOG_FILE}" 2>&1 ${CRON_MARKER}`,
   ];
