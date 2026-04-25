@@ -195,6 +195,28 @@ Sample weights account for backfill fidelity degradation. A promotion gate check
 
 ---
 
+## Local Dashboard (Stage 6)
+
+A local Next.js 14 dashboard renders all pipeline artifacts in a browser UI. It reads from a SQLite snapshot of `~/.tradingview-mcp/` and displays everything from daily grades to rolling analytics to shadow ML model cards.
+
+```bash
+cd web
+npm install
+npm run app:full   # init DB + sync all artifacts
+npm run dev        # open http://localhost:3000
+```
+
+After generating new reports or grades, re-sync:
+
+```bash
+npm run db:sync
+# or: tv db sync
+```
+
+See [web/README.md](web/README.md) for the full setup guide and page reference.
+
+---
+
 ## Daily Workflow
 
 ### Morning (before market open)

@@ -499,7 +499,26 @@ Rebuild the dataset and show me the feature dictionary
 Train all shadow models and show me the model leaderboard
 ```
 
-### Step 6 — Evaluate ML vs. rules
+### Step 6 — Start the local dashboard
+
+Once you have a few graded days, you can view everything in a browser UI:
+
+```bash
+cd web
+npm install
+npm run app:full   # init DB + sync all artifacts
+npm run dev        # open http://localhost:3000
+```
+
+After each new report or grade, refresh the dashboard data:
+
+```bash
+npm run db:sync
+```
+
+The dashboard shows official bias (green), shadow ML predictions (amber), rolling analytics, grade history, model cards, and edge evaluation status. See [web/README.md](web/README.md) for the full guide.
+
+### Step 7 — Evaluate ML vs. rules
 
 ```
 Run the edge evaluation and show me the edge report
