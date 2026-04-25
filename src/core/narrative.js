@@ -209,6 +209,54 @@ export function buildWatchoutsNarrative(report) {
 }
 
 /**
+ * Human-readable confidence band from the bias_total. The score is the sum
+ * of 9 DBE bias components (typically -9..+9). Our label maps track 53.6%
+ * historical hit rate at score |5+|, dropping toward chance at |0-2|.
+ */
+export function buildConfidenceNarrative(report) {
+  const biasTotal = report?.indicator_snapshot?.bias_total;
+  if (typeof biasTotal !== 'number') return null;
+  const abs = Math.abs(biasTotal);
+  let band, note;
+  if (abs >= 6)       { band = 'HIGH';     note = 'strong multi-component alignment — size appropriately'; }
+  else if (abs >= 4)  { band = 'MEDIUM';   note = 'clear directional read but watch for divergence in minor components'; }
+  else if (abs >= 2)  { band = 'LOW';      note = 'weak conviction — prefer smaller size and tighter stops'; }
+  else                { band = 'MINIMAL';  note = 'near-balanced — reduce size or stand aside'; }
+  return `Confidence: ${band} (${abs}/9 component strength) — ${note}.`;
+}
+
+/**
+ * Scenario branches: "if A then look for X; if B then look for Y."
+ * Uses structural levels to frame a two-sided map regardless of bias call.
+ */
+export function buildScenarioNarrative(report) {
+  const bias = report?.bias;
+  const pd   = report?.indicator_snapshot?.prior_day ?? {};
+  const vah  = report?.indicator_snapshot?.value_area?.vah;
+  const val  = report?.indicator_snapshot?.value_area?.val;
+  const pdh  = pd.pdh, pdc = pd.pdc, pdl = pd.pdl;
+  if (!bias || pdh == null || pdl == null) return null;
+
+  const fmtP = v => v != null ? Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—';
+
+  const branches = [];
+  if (bias === 'bullish') {
+    branches.push(`primary: hold above PDC ${fmtP(pdc)} and close near PDH ${fmtP(pdh)} or above VAH~ ${fmtP(vah)}`);
+    branches.push(`alt: break below PDC ${fmtP(pdc)} → fade attempts, expect rotation into VAL~ ${fmtP(val)}`);
+    branches.push(`stop: decisive break of PDL ${fmtP(pdl)} invalidates the bullish structural thesis`);
+  } else if (bias === 'bearish') {
+    branches.push(`primary: reject PDC ${fmtP(pdc)} lower and close near PDL ${fmtP(pdl)} or below VAL~ ${fmtP(val)}`);
+    branches.push(`alt: reclaim PDC ${fmtP(pdc)} → fade attempts, expect rotation into VAH~ ${fmtP(vah)}`);
+    branches.push(`stop: decisive break above PDH ${fmtP(pdh)} invalidates the bearish structural thesis`);
+  } else {
+    branches.push(`rotation expected between PDL ${fmtP(pdl)} and PDH ${fmtP(pdh)}`);
+    branches.push(`fade extremes; expect mean-reversion toward VAH~ ${fmtP(vah)} / VAL~ ${fmtP(val)}`);
+    branches.push(`directional trigger: close outside PDH/PDL with volume`);
+  }
+  return `Scenarios: ${branches.join('; ')}.`;
+}
+
+/**
  * Optional data-quality postscript only when something is degraded.
  */
 export function buildDataQualityNarrative(report) {
@@ -229,10 +277,12 @@ export function buildDataQualityNarrative(report) {
 export function generatePremarketNarrative(report) {
   const sections = [
     { name: 'bias',        text: buildBiasNarrative(report) },
+    { name: 'confidence',  text: buildConfidenceNarrative(report) },
     { name: 'day_type',    text: buildDayTypeNarrative(report) },
     { name: 'range',       text: buildRangeNarrative(report) },
     { name: 'intermarket', text: buildIntermarketNarrative(report) },
     { name: 'levels',      text: buildLevelsNarrative(report) },
+    { name: 'scenarios',   text: buildScenarioNarrative(report) },
     { name: 'watchouts',   text: buildWatchoutsNarrative(report) },
   ].filter(s => s.text);
 

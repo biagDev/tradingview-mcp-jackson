@@ -9,12 +9,17 @@ import Link from 'next/link';
 import {
   getLatestReport, getLatestPostclose, getAnalyticsSnapshot,
   listModels, getLatestShadowByTask, listSystemStatus,
+  getDailyScoreHistory, getBiasAgreementStats,
 } from '../lib/queries';
 import Card, { StatCard } from '../components/Card';
 import Badge, { ProductionBadge, ShadowBadge, BiasBadge, GradeBadge } from '../components/Badge';
 import EmptyState from '../components/EmptyState';
+import Sparkline from '../components/Sparkline';
 import { fmtInt, fmtDateTime, fmtNum, parseJsonField, relativeAge } from '../lib/format';
 import { biasComponentEntries, buildInvalidation, nearestKeyLevels } from '../lib/bias-explainer';
+import { readFileSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,6 +45,17 @@ export default function TodayPage() {
   const shadow   = getLatestShadowByTask();
   const system   = listSystemStatus();
   const lastSync = system.find(s => s.key === 'last_sync')?.last_updated ?? null;
+
+  // Daily score history (for trend sparkline)
+  const scoreHistory = getDailyScoreHistory({ limit: 60 });
+  const scoreSeries  = scoreHistory.map(r => r.score);
+  const biasAgreement = getBiasAgreementStats({ limit: 60 });
+
+  // Stage 7 ML evaluation (shadow only — read from ~/.tradingview-mcp/edge)
+  const EDGE_EVAL_PATH = join(homedir(), '.tradingview-mcp', 'edge', 'evaluation_summary.json');
+  const edgeEval: any = existsSync(EDGE_EVAL_PATH)
+    ? (() => { try { return JSON.parse(readFileSync(EDGE_EVAL_PATH, 'utf8')); } catch { return null; } })()
+    : null;
 
   if (!pm) {
     return (
@@ -96,6 +112,66 @@ export default function TodayPage() {
         <StatCard label="Current Streak" value={headline.current_streak ?? 0} sub={`longest win ${headline.longest_win_streak ?? 0}, loss ${headline.longest_loss_streak ?? 0}`} />
         <StatCard label="Avg Score" value={headline.average_score ?? '—'} sub={headline.range_within_tolerance_rate != null ? `range-in-tol ${Math.round(headline.range_within_tolerance_rate*100)}%` : undefined} />
       </section>
+
+      {/* ── Trend + ML Agreement side by side ──────────────────── */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card title="Score trend" subtitle={`last ${scoreSeries.length} graded days · bias hits ${biasAgreement.hits}/${biasAgreement.hits + biasAgreement.misses}`}>
+          <div className="text-bullish">
+            <Sparkline values={scoreSeries} width={480} height={60} />
+          </div>
+          <div className="mt-2 flex items-center justify-between text-xs text-muted">
+            <span>{scoreHistory[0]?.trading_date ?? '—'}</span>
+            <span className="font-mono">
+              min {Math.min(...scoreSeries.filter((v): v is number => typeof v === 'number')) || '—'} ·
+              max {Math.max(...scoreSeries.filter((v): v is number => typeof v === 'number')) || '—'}
+            </span>
+            <span>{scoreHistory[scoreHistory.length - 1]?.trading_date ?? '—'}</span>
+          </div>
+        </Card>
+
+        <Card
+          title="ML Agreement (shadow only)"
+          subtitle="Research-only comparison against rules engine"
+          actions={<Link href="/edge" className="text-xs text-accent hover:underline">Open edge detail →</Link>}
+        >
+          {edgeEval?.bias_direction ? (
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div className="rounded border border-bullish/30 bg-bullish/5 p-2 text-center">
+                  <div className="text-muted">Rules</div>
+                  <div className="mt-1 font-mono text-lg text-bullish">{edgeEval.bias_direction.rules?.hit_rate != null ? `${(edgeEval.bias_direction.rules.hit_rate * 100).toFixed(1)}%` : '—'}</div>
+                </div>
+                <div className="rounded border border-warning/30 bg-warning/5 p-2 text-center">
+                  <div className="text-muted">ML</div>
+                  <div className="mt-1 font-mono text-lg text-warning">{edgeEval.bias_direction.ml?.hit_rate != null ? `${(edgeEval.bias_direction.ml.hit_rate * 100).toFixed(1)}%` : '—'}</div>
+                </div>
+                <div className="rounded border border-border bg-surface2 p-2 text-center">
+                  <div className="text-muted">Baseline</div>
+                  <div className="mt-1 font-mono text-lg">{edgeEval.bias_direction.baseline?.hit_rate != null ? `${(edgeEval.bias_direction.baseline.hit_rate * 100).toFixed(1)}%` : '—'}</div>
+                </div>
+              </div>
+              <div className="flex justify-between rounded border border-border bg-surface2 px-3 py-2 text-xs">
+                <span className="text-muted">Agreement rate</span>
+                <span className="font-mono">{edgeEval.bias_direction.agreement?.rate != null ? `${(edgeEval.bias_direction.agreement.rate * 100).toFixed(1)}%` : '—'}</span>
+              </div>
+              <div className="flex justify-between rounded border border-border bg-surface2 px-3 py-2 text-xs">
+                <span className="text-muted">ML advantage over rules</span>
+                <span className={`font-mono ${edgeEval.bias_direction.ml_advantage_over_rules != null && edgeEval.bias_direction.ml_advantage_over_rules > 0 ? 'text-bullish' : 'text-bearish'}`}>
+                  {edgeEval.bias_direction.ml_advantage_over_rules != null ? `${edgeEval.bias_direction.ml_advantage_over_rules >= 0 ? '+' : ''}${(edgeEval.bias_direction.ml_advantage_over_rules * 100).toFixed(1)}pp` : '—'}
+                </span>
+              </div>
+              <div className="pt-1 text-[11px] text-muted">
+                Rules engine remains production. ML predictions do NOT drive the daily brief.
+                n={edgeEval.bias_direction.n}. <Link href="/edge" className="text-accent hover:underline">Full breakdowns →</Link>
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-muted">
+              No edge evaluation yet. Run <code className="font-mono text-xs">tv edge coldstart --days 90</code> to generate.
+            </div>
+          )}
+        </Card>
+      </div>
 
       {/* ── Narrative + Indicator Summary side-by-side ────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

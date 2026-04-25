@@ -66,10 +66,21 @@ const STATE_PATH    = join(BACKFILL_DIR, 'state.json');
 
 const SCHEMA_VERSION         = 1;
 const DEFAULT_CHUNK_SIZE     = 5;       // days per analytics/dataset rebuild
-const DEFAULT_PREMARKET_TIME = '09:00:00-04:00';  // 09:00 ET (EDT form; cron TZ aware)
-const DEFAULT_POSTCLOSE_TIME = '16:15:00-04:00';  // 16:15 ET
-const REPLAY_SETTLE_MS       = 2500;
+
+// Replay positions. The "pre-session" entry is earlier than the premarket
+// snapshot so the DBE can walk through the Asia + London windows and populate
+// session_structure.asia_{high,low} + session_structure.london_{high,low}.
+// After entering at 03:00 ET we autoplay forward to 09:00 ET, then snapshot.
+const DEFAULT_PRESESSION_TIME = '03:00:00-04:00';  // 03:00 ET — well before Asia close
+const DEFAULT_PREMARKET_TIME  = '09:00:00-04:00';  // 09:00 ET snapshot moment
+const DEFAULT_POSTCLOSE_TIME  = '16:15:00-04:00';  // 16:15 ET
+const REPLAY_SETTLE_MS        = 2500;
 const STEP_BETWEEN_REPORTS_MS = 1000;
+
+// Autoplay forward from pre-session to premarket. 10x delay (100ms per bar on
+// 15-min chart) takes roughly 15s to walk 6h of bars — worth the session fidelity.
+const AUTOPLAY_DELAY_MS       = 100;
+const AUTOPLAY_DURATION_MS    = 15000;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -196,6 +207,29 @@ async function enterReplayAt(isoDateTime) {
   return result;
 }
 
+/**
+ * Enter replay at an earlier pre-session time and autoplay forward so the
+ * DBE can walk Asia + London session windows. Produces richer
+ * session_structure coverage on backfilled days.
+ */
+async function enterReplayWithPreSession(preSessionISO) {
+  await stopReplayIfActive();
+  await replay.start({ date: preSessionISO });
+  await sleep(REPLAY_SETTLE_MS);
+  // Autoplay at ~100ms/bar. On a 15-min chart, 6h of bars = 24 bars → ~2.4s,
+  // but we wait longer to give indicators time to recompute each step.
+  try {
+    await replay.autoplay({ speed: AUTOPLAY_DELAY_MS });
+    await sleep(AUTOPLAY_DURATION_MS);
+    await replay.autoplay({ speed: AUTOPLAY_DELAY_MS });   // toggle off
+  } catch {
+    // If autoplay isn't available for this symbol/timeframe, fall back —
+    // the snapshot will still happen at pre-session time but without full
+    // session structure.
+  }
+  await sleep(REPLAY_SETTLE_MS);
+}
+
 // ─── Chunk-boundary rebuild ──────────────────────────────────────────────────
 
 function rebuildChunk({ trainModels = false } = {}) {
@@ -252,15 +286,17 @@ async function processDate({ date, batchId, overwrite, log }) {
     await health.healthCheck();
     entry.steps.healthCheck = 'ok';
 
-    // ── Premarket at 09:00 ET ─────────────────────────────────────────
-    const pmDateTime = `${date}T${DEFAULT_PREMARKET_TIME}`;
-    await enterReplayAt(pmDateTime);
-    entry.steps.replayStart_premarket = 'ok';
+    // ── Premarket at 09:00 ET (preceded by Asia+London walk for fidelity) ──
+    const pmDateTime  = `${date}T${DEFAULT_PREMARKET_TIME}`;
+    const preSessionISO = `${date}T${DEFAULT_PRESESSION_TIME}`;
+    await enterReplayWithPreSession(preSessionISO);
+    entry.steps.replayStart_premarket = 'ok_with_session_walk';
 
     const pmBackfillMeta = {
       is_backfill: true,
       batch_id: batchId,
-      replay_mode: 'date_position',
+      replay_mode: 'presession_autoplay',
+      presession_date_et: preSessionISO,
       replay_date_et: pmDateTime,
       snapshot_kind: 'premarket',
       generated_at_utc: nowISO(),

@@ -116,3 +116,34 @@ export function listSyncRuns({ limit = 10 } = {}): SyncRun[] {
   const db = getDb();
   return db.prepare(`SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?`).all(limit) as SyncRun[];
 }
+
+/**
+ * Daily score history for sparklines. Returns [{ trading_date, score, bias_correct }]
+ * sorted ascending. Ungraded / null-score days are returned with score=null so
+ * the sparkline can skip gaps.
+ */
+export function getDailyScoreHistory({ limit = 60 }: { limit?: number } = {}):
+  Array<{ trading_date: string; score: number | null; bias_correct: number | null; overall_grade: string | null }> {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT trading_date, score_0_to_100 AS score, bias_correct, overall_grade
+    FROM daily_postclose_reviews
+    ORDER BY trading_date DESC
+    LIMIT ?
+  `).all(limit) as any[];
+  return rows.reverse();   // oldest → newest for sparkline
+}
+
+/** Count of bias hits / misses across recent graded days. */
+export function getBiasAgreementStats({ limit = 60 }: { limit?: number } = {}):
+  { hits: number; misses: number; ungraded: number; rate: number | null } {
+  const rows = getDailyScoreHistory({ limit });
+  let hits = 0, misses = 0, ungraded = 0;
+  for (const r of rows) {
+    if (r.bias_correct === 1) hits++;
+    else if (r.bias_correct === 0) misses++;
+    else ungraded++;
+  }
+  const den = hits + misses;
+  return { hits, misses, ungraded, rate: den > 0 ? hits / den : null };
+}
