@@ -1,8 +1,15 @@
 # TradingView MCP — Claude Instructions
 
-68 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+81 tools across two categories: (1) chart control and Pine Script tools for live TradingView interaction, and (2) analysis pipeline tools for daily reporting, grading, analytics, dataset curation, and shadow ML research.
 
 ## Decision Tree — Which Tool When
+
+### "Run my morning brief"
+1. `morning_brief` → scan watchlist from rules.json, read all indicators, apply bias criteria
+2. `session_save` → save the generated brief for today
+
+### "What was yesterday's brief / my bias last week?"
+- `session_get` → retrieve saved brief (today's or most recent)
 
 ### "What's on my chart right now?"
 1. `chart_get_state` → symbol, timeframe, chart type, list of all indicators with entity IDs
@@ -33,6 +40,30 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 6. `data_get_ohlcv` with `summary: true` → price action summary
 7. `capture_screenshot` → visual confirmation
 
+### "Capture today's market open / session"
+1. `run_premarket_report` → capture NQ Bias Engine state at 9:00 ET (run before market open)
+2. `run_postclose_report` → capture actual session outcome (run after 16:00 ET)
+3. `grade_latest` → compare prediction vs. reality → assign letter grade + score
+
+### "How am I performing?"
+- `get_performance_summary` → overall hit rates, grade distribution, streaks
+- `get_recent_grades` → last N days with scores and failure tags
+- `rebuild_analytics` then `get_analytics_summary` → full statistical picture
+- `get_rolling_windows` → 5/20/60-day windows
+- `get_drift_metrics` → is performance changing?
+- `get_best_conditions` / `get_worst_conditions` → which setups are working / not working
+
+### "Build the ML dataset"
+1. `rebuild_dataset` → convert all report pairs into training records
+2. `get_dataset_leakage_audit` → verify no post-close data leaked into features
+3. `get_dataset_quality` → check null rates and coverage
+
+### "Train the shadow models"
+1. `train_models` → train all 5 prediction tasks (bias_direction, day_type, range_in_tolerance, actual_range_points, good_grade)
+2. `get_model_leaderboard` → ML vs. baseline comparison per task
+3. `edge_evaluate` → ML vs. rules engine vs. baseline on held-out test set
+4. `edge_promotion_check` → does any model meet promotion criteria?
+
 ### "Change the chart"
 - `chart_set_symbol` → switch ticker (e.g., "AAPL", "ES1!", "NYMEX:CL1!")
 - `chart_set_timeframe` → switch resolution (e.g., "1", "5", "15", "60", "D", "W")
@@ -58,6 +89,11 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 4. `replay_trade` with `action: "buy"/"sell"/"close"` → execute trades
 5. `replay_status` → check position, P&L, current date
 6. `replay_stop` → return to realtime
+
+### "Backfill historical data"
+1. `backfill_run` with `start_date` and `end_date` → replay historical dates through report+grade pipeline
+2. `backfill_status` → check progress
+3. `backfill_resume` → resume if interrupted
 
 ### "Screen multiple symbols"
 - `batch_run` with `symbols: ["ES1!", "NQ1!", "YM1!"]` and `action: "screenshot"` or `"get_ohlcv"`
@@ -120,10 +156,33 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 - OHLCV capped at 500 bars, trades at 20 per request
 - Pine labels capped at 50 per study by default (pass `max_labels` to override)
 
+## Output Size Estimates (compact mode)
+
+| Tool | Typical Output |
+|------|---------------|
+| `quote_get` | ~200 bytes |
+| `data_get_study_values` | ~500 bytes (all indicators) |
+| `data_get_pine_lines` | ~1-3 KB per study (deduplicated levels) |
+| `data_get_pine_labels` | ~2-5 KB per study (capped at 50) |
+| `data_get_pine_tables` | ~1-4 KB per study (formatted rows) |
+| `data_get_pine_boxes` | ~1-2 KB per study (deduplicated zones) |
+| `data_get_ohlcv` (summary) | ~500 bytes |
+| `data_get_ohlcv` (100 bars) | ~8 KB |
+| `capture_screenshot` | ~300 bytes (returns file path, not image data) |
+| `get_analytics_summary` | ~2 KB |
+| `get_rolling_windows` | ~3 KB |
+| `get_model_leaderboard` | ~2 KB |
+| `edge_report` | ~5 KB |
+
 ## Architecture
 
 ```
 Claude Code ←→ MCP Server (stdio) ←→ CDP (localhost:9222) ←→ TradingView Desktop (Electron)
+                    |
+               SQLite + JSONL
+               (~/.tradingview-mcp/)
 ```
+
+See ARCHITECTURE.md for full technical details.
 
 Pine graphics path: `study._graphics._primitivesCollection.dwglines.get('lines').get(false)._primitivesDataById`
