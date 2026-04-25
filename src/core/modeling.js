@@ -681,10 +681,15 @@ function pickChampionMetricValue(metrics, task) {
 }
 
 function compareChampionValues(a, b, direction) {
+  // Used with Array.sort. Return NEGATIVE when `a` should come first.
+  // `finite[0]` is picked as champion, so the BEST candidate must sort first.
+  //   - null values are "worst" → always come last
+  //   - direction='max' (higher is better): a is better than b when a > b → return b - a
+  //   - direction='min' (lower is better): a is better than b when a < b → return a - b
   if (a == null && b == null) return 0;
-  if (a == null) return -1;
-  if (b == null) return 1;
-  return direction === 'min' ? (b - a) : (a - b); // positive means a is better
+  if (a == null) return 1;   // a is null, put after b
+  if (b == null) return -1;  // b is null, put after a
+  return direction === 'min' ? (a - b) : (b - a);
 }
 
 /** Train and evaluate a single task, writing all artifacts. */
