@@ -155,42 +155,90 @@ function appendBatchLog(batchId, line) {
 /**
  * Inspect a just-generated report and emit fidelity caveats so the
  * backfilled row can be filtered or weighted later.
+ *
+ * Fidelity levels (worst wins when multiple apply):
+ *   full                — all data fields populated and trustworthy
+ *   degraded_session    — Asia/London session structure is null (replay
+ *                         did not walk through those hours)
+ *   degraded_intermarket — intermarket fields are ABSENT (null), meaning
+ *                         the DBE could not query them under replay
+ *   mixed               — some dimensions degraded, others ok
+ *
+ * NOTE on intermarket under TV replay:
+ *   request.security() calls in the DBE *may* resolve to live quotes
+ *   rather than backdated values. The fidelity caveat
+ *   'intermarket_live_quote_risk' is added when intermarket data IS
+ *   present (because present-but-stale is worse than absent-and-known).
+ *   Absent intermarket (null fields) gets 'degraded_intermarket' because
+ *   the feature is simply missing for that row.
+ *
+ * Fidelity weight (0.0–1.0) is emitted for use in Stage 7 sample
+ * weighting: full=1.0, mixed=0.7, degraded_session=0.85,
+ * degraded_intermarket=0.6.
  */
 function assessFidelity(report) {
   const caveats = [];
-  let fidelity = 'full';
+  let fidelity  = 'full';
 
-  // Session-window data depends on replay walking through Asia/London hours.
+  // ── Session structure ────────────────────────────────────────────────────────
   const sessNull =
-    report?.session_structure?.asia?.high == null &&
+    report?.session_structure?.asia?.high   == null &&
     report?.session_structure?.london?.high == null;
   if (sessNull) {
-    caveats.push('session_structure_null — replay may not have reached Asia/London windows');
+    caveats.push('session_structure_null — replay did not walk Asia/London windows; session_structure fields will be null');
     fidelity = 'degraded_session';
+  } else {
+    // Partial: one window populated but not both
+    const asiaMissing   = report?.session_structure?.asia?.high   == null;
+    const londonMissing = report?.session_structure?.london?.high == null;
+    if (asiaMissing || londonMissing) {
+      caveats.push(`session_structure_partial — ${asiaMissing ? 'asia' : 'london'} window missing`);
+      fidelity = fidelity === 'full' ? 'mixed' : fidelity;
+    }
   }
 
-  // Intermarket is typically live-queried; flag that it may not be historical.
-  const hasIntermarket =
-    report?.intermarket?.dxy_pct != null ||
-    report?.intermarket?.ten_year_pct != null ||
-    report?.intermarket?.es_pct != null ||
-    report?.intermarket?.vix != null;
-  if (hasIntermarket) {
-    caveats.push('intermarket_may_reflect_live_quotes — request.security() under TV replay may not be backdated');
+  // ── Intermarket ──────────────────────────────────────────────────────────────
+  const intermarket = report?.intermarket ?? {};
+  const imFields = ['dxy_pct', 'ten_year_pct', 'es_pct', 'vix'];
+  const imPresent = imFields.filter(f => intermarket[f] != null).length;
+  const imTotal   = imFields.length;
+
+  if (imPresent === 0) {
+    // All null: DBE could not query intermarket under replay — feature is missing
+    caveats.push('intermarket_absent — all intermarket fields null; likely a replay API limitation for this date');
     fidelity = fidelity === 'full' ? 'degraded_intermarket' : 'mixed';
+  } else if (imPresent < imTotal) {
+    // Partial: some present, some not
+    const missing = imFields.filter(f => intermarket[f] == null);
+    caveats.push(`intermarket_partial — missing: ${missing.join(', ')}`);
+    fidelity = fidelity === 'full' ? 'mixed' : fidelity;
+    // Present fields may still reflect live quotes
+    caveats.push('intermarket_live_quote_risk — present fields may reflect live quotes, not historical values (request.security() under TV replay)');
+  } else {
+    // All present — data exists but may be live quotes, not backdated
+    caveats.push('intermarket_live_quote_risk — all fields present but may reflect live quotes, not historical values (request.security() under TV replay)');
+    // Don't degrade fidelity level for this — it's a known caveat, not a missing-data problem
   }
 
-  // DBE data quality
+  // ── DBE data quality ─────────────────────────────────────────────────────────
   if (report?.data_quality?.completeness && report.data_quality.completeness !== 'full') {
     caveats.push(`data_quality_${report.data_quality.completeness}`);
     fidelity = fidelity === 'full' ? 'mixed' : fidelity;
   }
   if (report?.data_quality?.fallback_used === true) {
-    caveats.push('indicator_fallback_used');
+    caveats.push('indicator_fallback_used — DBE used a fallback calculation path');
     fidelity = fidelity === 'full' ? 'mixed' : fidelity;
   }
 
-  return { replay_fidelity: fidelity, backfill_caveats: caveats };
+  // ── Fidelity weight for Stage 7 sample weighting ─────────────────────────────
+  const fidelityWeight = {
+    full:                  1.0,
+    degraded_session:      0.85,
+    mixed:                 0.70,
+    degraded_intermarket:  0.60,
+  }[fidelity] ?? 0.70;
+
+  return { replay_fidelity: fidelity, fidelity_weight: fidelityWeight, backfill_caveats: caveats };
 }
 
 // ─── Replay controllers ──────────────────────────────────────────────────────
@@ -200,34 +248,102 @@ async function stopReplayIfActive() {
   await sleep(500);
 }
 
-async function enterReplayAt(isoDateTime) {
+/**
+ * Enter replay at a specific ISO datetime, with retry on failure.
+ * Retries up to 3 times with 2s back-off — TV replay sometimes needs
+ * a moment after symbol load before replay mode is available.
+ */
+async function enterReplayAt(isoDateTime, { retries = 3 } = {}) {
   await stopReplayIfActive();
-  const result = await replay.start({ date: isoDateTime });
-  await sleep(REPLAY_SETTLE_MS);
-  return result;
+  let lastErr;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const result = await replay.start({ date: isoDateTime });
+      await sleep(REPLAY_SETTLE_MS);
+      return result;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) await sleep(2000 * attempt);
+    }
+  }
+  throw new Error(`Replay entry failed after ${retries} attempts: ${lastErr?.message}`);
 }
 
 /**
- * Enter replay at an earlier pre-session time and autoplay forward so the
- * DBE can walk Asia + London session windows. Produces richer
- * session_structure coverage on backfilled days.
+ * Parse the replay status date string into a comparable ET hour (0–23).
+ * Returns null if unparseable.
  */
-async function enterReplayWithPreSession(preSessionISO) {
-  await stopReplayIfActive();
-  await replay.start({ date: preSessionISO });
-  await sleep(REPLAY_SETTLE_MS);
-  // Autoplay at ~100ms/bar. On a 15-min chart, 6h of bars = 24 bars → ~2.4s,
-  // but we wait longer to give indicators time to recompute each step.
+function replayHourET(statusDate) {
+  if (!statusDate) return null;
   try {
-    await replay.autoplay({ speed: AUTOPLAY_DELAY_MS });
-    await sleep(AUTOPLAY_DURATION_MS);
-    await replay.autoplay({ speed: AUTOPLAY_DELAY_MS });   // toggle off
+    const d = new Date(statusDate);
+    if (isNaN(d.getTime())) return null;
+    const etHour = new Date(d.toLocaleString('en-US', { timeZone: 'America/New_York' })).getHours();
+    return etHour;
+  } catch { return null; }
+}
+
+/**
+ * Enter replay at pre-session time and step forward bar-by-bar until the
+ * replay clock has passed the target ET hour, giving the DBE time to walk
+ * through Asia and London session windows.
+ *
+ * Strategy:
+ *   1. Enter replay at 03:00 ET (pre-Asia close)
+ *   2. Step forward one bar at a time, checking replay_status after each step
+ *   3. Stop when replay time has advanced past targetHourET (default 9)
+ *   4. If replay_status is unavailable or steps > maxSteps, fall back to
+ *      the old timer-based approach
+ *
+ * This is more reliable than a fixed-duration autoplay because:
+ *   - Different timeframes have different bars-per-hour
+ *   - Machine performance varies widely
+ *   - We know exactly when to stop rather than guessing
+ */
+async function enterReplayWithPreSession(preSessionISO, targetHourET = 9) {
+  await stopReplayIfActive();
+  await enterReplayAt(preSessionISO);
+
+  const MAX_STEPS = 60;   // safety ceiling — 6h × 15-min bars = 24; 60 gives headroom
+  const STEP_SETTLE_MS = 150;
+
+  let steppedToTarget = false;
+  let steps = 0;
+
+  try {
+    for (let i = 0; i < MAX_STEPS; i++) {
+      await replay.step({});
+      await sleep(STEP_SETTLE_MS);
+      steps++;
+
+      // Poll current replay position via status
+      let statusHour = null;
+      try {
+        const st = await replay.status({});
+        statusHour = replayHourET(st?.current_date ?? st?.date ?? null);
+      } catch { /* status unavailable — fall back */ }
+
+      if (statusHour !== null && statusHour >= targetHourET) {
+        steppedToTarget = true;
+        break;
+      }
+    }
   } catch {
-    // If autoplay isn't available for this symbol/timeframe, fall back —
-    // the snapshot will still happen at pre-session time but without full
-    // session structure.
+    // Autoplay/step not available for this symbol/timeframe — fall back to timer
   }
+
+  if (!steppedToTarget) {
+    // Timer fallback: autoplay for AUTOPLAY_DURATION_MS, which gets most charts
+    // close enough to the target window even if step-based polling failed.
+    try {
+      await replay.autoplay({ speed: AUTOPLAY_DELAY_MS });
+      await sleep(AUTOPLAY_DURATION_MS);
+      await replay.autoplay({ speed: AUTOPLAY_DELAY_MS });
+    } catch { /* ignore */ }
+  }
+
   await sleep(REPLAY_SETTLE_MS);
+  return { steps_taken: steps, stepped_to_target: steppedToTarget };
 }
 
 // ─── Chunk-boundary rebuild ──────────────────────────────────────────────────
@@ -289,13 +405,17 @@ async function processDate({ date, batchId, overwrite, log }) {
     // ── Premarket at 09:00 ET (preceded by Asia+London walk for fidelity) ──
     const pmDateTime  = `${date}T${DEFAULT_PREMARKET_TIME}`;
     const preSessionISO = `${date}T${DEFAULT_PRESESSION_TIME}`;
-    await enterReplayWithPreSession(preSessionISO);
-    entry.steps.replayStart_premarket = 'ok_with_session_walk';
+    const walkResult = await enterReplayWithPreSession(preSessionISO);
+    entry.steps.replayStart_premarket = walkResult.stepped_to_target
+      ? `ok_step_walk (${walkResult.steps_taken} steps)`
+      : `ok_timer_fallback (${walkResult.steps_taken} steps before fallback)`;
 
     const pmBackfillMeta = {
       is_backfill: true,
       batch_id: batchId,
-      replay_mode: 'presession_autoplay',
+      replay_mode: walkResult.stepped_to_target ? 'presession_step_walk' : 'presession_timer_fallback',
+      steps_taken: walkResult.steps_taken,
+      stepped_to_target: walkResult.stepped_to_target,
       presession_date_et: preSessionISO,
       replay_date_et: pmDateTime,
       snapshot_kind: 'premarket',
@@ -311,10 +431,11 @@ async function processDate({ date, batchId, overwrite, log }) {
     const pmFidelity = assessFidelity(pmResult.report);
     entry.premarket_fidelity = pmFidelity;
 
-    // Patch fidelity into the saved file (generatePremarketReport saves before returning)
+    // Patch fidelity + fidelity_weight into the saved file
     try {
       const pmSaved = JSON.parse(readFileSync(pmPath, 'utf8'));
       pmSaved.backfill_metadata = { ...pmSaved.backfill_metadata, ...pmFidelity };
+      pmSaved.fidelity_weight   = pmFidelity.fidelity_weight;
       writeFileSync(pmPath, JSON.stringify(pmSaved, null, 2));
     } catch { /* non-fatal */ }
 
@@ -323,7 +444,7 @@ async function processDate({ date, batchId, overwrite, log }) {
     // ── Stop replay, re-enter at 16:15 ET for post-close ──────────────
     await stopReplayIfActive();
     const pcDateTime = `${date}T${DEFAULT_POSTCLOSE_TIME}`;
-    await enterReplayAt(pcDateTime);
+    await enterReplayAt(pcDateTime, { retries: 3 });
     entry.steps.replayStart_postclose = 'ok';
 
     const pcBackfillMeta = {
@@ -347,22 +468,34 @@ async function processDate({ date, batchId, overwrite, log }) {
     try {
       const pcSaved = JSON.parse(readFileSync(pcPath, 'utf8'));
       pcSaved.backfill_metadata = { ...pcSaved.backfill_metadata, ...pcFidelity };
+      pcSaved.fidelity_weight   = pcFidelity.fidelity_weight;
       writeFileSync(pcPath, JSON.stringify(pcSaved, null, 2));
     } catch { /* non-fatal */ }
 
     // ── Grade the day ─────────────────────────────────────────────────
     const gradeResult = await gradeTradingDate({ date, overwrite: true });
     entry.steps.grade = gradeResult?.success ? 'ok' : 'failed';
+
+    // Composite fidelity weight = minimum of premarket and postclose weights.
+    // Used by Stage 7 sample weighting so that degraded backfill rows have
+    // less influence on ML training than high-fidelity live rows.
+    const compositeWeight = Math.min(
+      pmFidelity.fidelity_weight ?? 1.0,
+      pcFidelity.fidelity_weight ?? 1.0,
+    );
+    entry.fidelity_weight = compositeWeight;
+
     entry.grade = {
-      overall_grade:  gradeResult?.grading?.overall_grade  ?? null,
-      score_0_to_100: gradeResult?.grading?.score_0_to_100 ?? null,
-      bias_correct:   gradeResult?.grading?.bias_correct   ?? null,
-      failure_tags:   gradeResult?.grading?.failure_tags   ?? [],
+      overall_grade:   gradeResult?.grading?.overall_grade  ?? null,
+      score_0_to_100:  gradeResult?.grading?.score_0_to_100 ?? null,
+      bias_correct:    gradeResult?.grading?.bias_correct   ?? null,
+      failure_tags:    gradeResult?.grading?.failure_tags   ?? [],
+      fidelity_weight: compositeWeight,
     };
 
     entry.status = 'done';
     entry.finished_at = nowISO();
-    log(`[${date}] ✓ done — grade ${entry.grade.overall_grade} (${entry.grade.score_0_to_100}/100), fidelity premarket=${pmFidelity.replay_fidelity}, postclose=${pcFidelity.replay_fidelity}`);
+    log(`[${date}] ✓ done — grade ${entry.grade.overall_grade} (${entry.grade.score_0_to_100}/100), fidelity premarket=${pmFidelity.replay_fidelity} (w=${pmFidelity.fidelity_weight}), postclose=${pcFidelity.replay_fidelity} (w=${pcFidelity.fidelity_weight}), composite_weight=${compositeWeight}`);
   } catch (err) {
     entry.status = 'failed';
     entry.error = err?.message ?? String(err);
