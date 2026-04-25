@@ -22,11 +22,17 @@ register('alert', {
       }),
     }],
     ['delete', {
-      description: 'Delete alerts',
+      description: 'Delete alerts. Use --id <id>, --ids <id1,id2,...>, or --all',
       options: {
-        all: { type: 'boolean', description: 'Delete all alerts' },
+        id:  { type: 'string',  description: 'Single alert ID to delete (from tv alert list)' },
+        ids: { type: 'string',  description: 'Comma-separated alert IDs to delete' },
+        all: { type: 'boolean', description: 'Delete all active alerts' },
       },
-      handler: (opts) => core.deleteAlerts({ delete_all: opts.all }),
+      handler: (opts) => core.deleteAlerts({
+        alert_id:   opts.id  || undefined,
+        alert_ids:  opts.ids ? opts.ids.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+        delete_all: opts.all || false,
+      }),
     }],
   ]),
 });

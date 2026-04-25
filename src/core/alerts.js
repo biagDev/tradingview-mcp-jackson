@@ -103,21 +103,84 @@ export async function list() {
   return { success: true, alert_count: result?.alerts?.length || 0, source: 'internal_api', alerts: result?.alerts || [], error: result?.error };
 }
 
-export async function deleteAlerts({ delete_all }) {
+/**
+ * Delete one, several, or all alerts via the pricealerts REST API.
+ *
+ * Accepts three call patterns:
+ *   deleteAlerts({ alert_id: '12345' })          — delete one alert by ID
+ *   deleteAlerts({ alert_ids: ['1','2','3'] })    — delete a list of IDs
+ *   deleteAlerts({ delete_all: true })            — fetch all IDs then delete them all
+ *
+ * The REST endpoint mirrors the list_alerts session cookie so no extra
+ * auth is needed — the browser's TradingView session handles it.
+ */
+export async function deleteAlerts({ delete_all, alert_id, alert_ids } = {}) {
+  // Resolve the target ID list
+  let ids = [];
+
   if (delete_all) {
-    const result = await evaluate(`
+    const listed = await list();
+    if (!listed.success) throw new Error(`Could not fetch alert list before deleting: ${listed.error}`);
+    ids = (listed.alerts || []).map(a => String(a.alert_id)).filter(Boolean);
+    if (ids.length === 0) return { success: true, deleted: 0, note: 'No active alerts to delete.' };
+  } else if (alert_ids && Array.isArray(alert_ids)) {
+    ids = alert_ids.map(String).filter(Boolean);
+  } else if (alert_id != null) {
+    ids = [String(alert_id)];
+  } else {
+    throw new Error('Provide alert_id, alert_ids, or delete_all: true.');
+  }
+
+  if (ids.length === 0) throw new Error('No alert IDs resolved for deletion.');
+
+  // Build query-string body: alert_ids[]=1&alert_ids[]=2 ...
+  const body = ids.map(id => `alert_ids%5B%5D=${encodeURIComponent(id)}`).join('&');
+
+  const result = await evaluateAsync(`
+    (function() {
+      var ids = ${JSON.stringify(ids)};
+      var body = ids.map(function(id) { return 'alert_ids%5B%5D=' + encodeURIComponent(id); }).join('&');
+      return fetch('https://pricealerts.tradingview.com/delete_alerts', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body,
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(data) { return { ok: data.s === 'ok', raw: data }; })
+        .catch(function(e) { return { ok: false, error: e.message }; });
+    })()
+  `);
+
+  if (!result?.ok) {
+    // Fallback: some TV versions expect a JSON body instead
+    const fallback = await evaluateAsync(`
       (function() {
-        var alertBtn = document.querySelector('[data-name="alerts"]');
-        if (alertBtn) alertBtn.click();
-        var header = document.querySelector('[data-name="alerts"]');
-        if (header) {
-          header.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 100 }));
-          return { context_menu_opened: true };
-        }
-        return { context_menu_opened: false };
+        var ids = ${JSON.stringify(ids)};
+        return fetch('https://pricealerts.tradingview.com/delete_alerts', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ alert_ids: ids }),
+        })
+          .then(function(r) { return r.json(); })
+          .then(function(data) { return { ok: data.s === 'ok', raw: data }; })
+          .catch(function(e) { return { ok: false, error: e.message }; });
       })()
     `);
-    return { success: true, note: 'Alert deletion requires manual confirmation in the context menu.', context_menu_opened: result?.context_menu_opened || false, source: 'dom_fallback' };
+
+    if (!fallback?.ok) {
+      return {
+        success: false,
+        deleted: 0,
+        ids_attempted: ids,
+        error: fallback?.error || fallback?.raw?.errmsg || 'Delete API returned non-ok',
+        raw: fallback?.raw,
+      };
+    }
+
+    return { success: true, deleted: ids.length, ids_deleted: ids, source: 'rest_api_json' };
   }
-  throw new Error('Individual alert deletion not yet supported. Use delete_all: true.');
+
+  return { success: true, deleted: ids.length, ids_deleted: ids, source: 'rest_api_form' };
 }
