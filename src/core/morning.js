@@ -9,6 +9,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as chart from "./chart.js";
 import * as data from "./data.js";
+import { loadAndValidateRules } from "./rules-validator.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "../../");
@@ -23,11 +24,16 @@ function loadRules(rulesPath) {
 
   for (const p of candidates) {
     if (existsSync(p)) {
-      try {
-        return { rules: JSON.parse(readFileSync(p, "utf8")), path: p };
-      } catch (e) {
-        throw new Error(`Failed to parse rules.json at ${p}: ${e.message}`);
+      const result = loadAndValidateRules(p);
+      if (!result.loaded) throw new Error(result.errors.join('\n'));
+      // Hard errors block the brief; warnings are passed through to the caller
+      if (!result.valid) {
+        throw new Error(
+          `rules.json has ${result.errors.length} error(s) — fix before running brief:\n` +
+          result.errors.map(e => `  • ${e}`).join('\n')
+        );
       }
+      return { rules: JSON.parse(readFileSync(p, "utf8")), path: p, warnings: result.warnings };
     }
   }
 
@@ -42,7 +48,7 @@ function loadRules(rulesPath) {
 }
 
 export async function runBrief({ rules_path } = {}) {
-  const { rules, path: loadedFrom } = loadRules(rules_path);
+  const { rules, path: loadedFrom, warnings: rulesWarnings = [] } = loadRules(rules_path);
   const { watchlist = [], default_timeframe = "240" } = rules;
 
   if (!watchlist.length) {
@@ -99,6 +105,7 @@ export async function runBrief({ rules_path } = {}) {
     success: true,
     generated_at: new Date().toISOString(),
     rules_loaded_from: loadedFrom,
+    rules_warnings: rulesWarnings.length > 0 ? rulesWarnings : undefined,
     rules: {
       bias_criteria: rules.bias_criteria || null,
       risk_rules: rules.risk_rules || null,
@@ -110,7 +117,8 @@ export async function runBrief({ rules_path } = {}) {
       "Output one line per symbol: SYMBOL | BIAS: [bullish/bearish/neutral] | KEY LEVEL: [price] | WATCH: [what to monitor]",
       "End with a one-sentence overall market read.",
       "Be direct. No preamble.",
-    ].join(" "),
+      rulesWarnings.length > 0 ? `Note: rules.json has ${rulesWarnings.length} warning(s): ${rulesWarnings.join('; ')}` : '',
+    ].filter(Boolean).join(" "),
   };
 }
 

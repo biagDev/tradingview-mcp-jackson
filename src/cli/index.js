@@ -26,6 +26,7 @@ import "./commands/pane.js";
 import "./commands/tab.js";
 import "./commands/stream.js";
 import "./commands/morning.js";
+import "./commands/rules.js";
 import "./commands/reports.js";
 import "./commands/scheduler.js";
 import "./commands/grading.js";
